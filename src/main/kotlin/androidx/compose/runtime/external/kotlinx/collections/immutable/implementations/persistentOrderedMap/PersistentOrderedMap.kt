@@ -15,7 +15,6 @@ import androidx.compose.runtime.external.kotlinx.collections.immutable.mutate
 internal class LinkedValue<V>(val value: V, val previous: Any?, val next: Any?) {
   /** Constructs LinkedValue for a new single entry */
   constructor(value: V) : this(value, EndOfChain, EndOfChain)
-
   /** Constructs LinkedValue for a new last entry */
   constructor(value: V, previous: Any?) : this(value, previous, EndOfChain)
 
@@ -130,7 +129,6 @@ internal class PersistentOrderedMap<K, V>(
 
   internal companion object {
     private val EMPTY = PersistentOrderedMap<Nothing, Nothing>(EndOfChain, EndOfChain, PersistentHashMap.emptyOf())
-
     @Suppress("UNCHECKED_CAST")
     internal fun <K, V> emptyOf(): PersistentOrderedMap<K, V> = EMPTY as PersistentOrderedMap<K, V>
   }

@@ -29,41 +29,31 @@ class GroupSizeValidationTests {
 
   @Test
   fun spacerLike() = compositionTest {
-    slotExpect(
-      name = "SpacerLike",
-      noMoreGroupsThan = 3,
-      noMoreSlotsThan = 10,
-    ) {
+    slotExpect(name = "SpacerLike", noMoreGroupsThan = 3, noMoreSlotsThan = 10) {
       SpacerLike(Modifier)
     }
   }
 
   @Test
   fun columnLikeSize() = compositionTest {
-    slotExpect(
-      name = "ColumnLike",
-      noMoreGroupsThan = 3,
-      noMoreSlotsThan = 9,
-    ) {
-      ColumnLike {}
-    }
+    slotExpect(name = "ColumnLike", noMoreGroupsThan = 3, noMoreSlotsThan = 9) { ColumnLike {} }
   }
 
   @Test
   fun textLikeSize() = compositionTest {
-    slotExpect(name = "TextLike", noMoreGroupsThan = 4, noMoreSlotsThan = 4) { TextLike("") }
+    slotExpect(name = "TextLike", noMoreGroupsThan = 4, noMoreSlotsThan = 5) { TextLike("") }
   }
 
   @Test
   fun basicTextLikeSize() = compositionTest {
-    slotExpect(name = "TextLike", noMoreGroupsThan = 5, noMoreSlotsThan = 13) {
+    slotExpect(name = "TextLike", noMoreGroupsThan = 5, noMoreSlotsThan = 14) {
       BasicTextLike("")
     }
   }
 
   @Test
   fun checkboxLike() = compositionTest {
-    slotExpect(name = "CheckboxLike", noMoreGroupsThan = 8, noMoreSlotsThan = 17) {
+    slotExpect(name = "CheckboxLike", noMoreGroupsThan = 8, noMoreSlotsThan = 18) {
       CheckboxLike(checked = false, onCheckedChange = {})
     }
   }
@@ -86,7 +76,9 @@ private val LocalViewConfiguration = staticCompositionLocalOf { 0 }
 
 private object ViewHelper {
   val Constructor = ::View
-  val SetCompositeKeyHash: View.(Int) -> Unit = { attributes["compositeKeyHash"] = it }
+  val SetCompositeKeyHashCode: View.(CompositeKeyHashCode) -> Unit = {
+    attributes["compositeKeyHash"] = it
+  }
   val SetModifier: View.(Modifier) -> Unit = { attributes["modifier"] = it }
   val SetMeasurePolicy: View.(MeasurePolicy) -> Unit = { attributes["measurePolicy"] = it }
   val SetDensity: View.(Int) -> Unit = { attributes["density"] = it }
@@ -96,45 +88,45 @@ private object ViewHelper {
 
 @Composable
 private inline fun LayoutLike(
-    content: @Composable () -> Unit,
-    modifier: Modifier = Modifier,
-    measurePolicy: MeasurePolicy,
+  modifier: Modifier = Modifier,
+  measurePolicy: MeasurePolicy,
+  content: @Composable () -> Unit,
 ) {
-  val compositeKeyHash = currentCompositeKeyHash
+  val compositeKeyHash = currentCompositeKeyHashCode
   val density = LocalDensity.current
   val layoutDirection = LocalLayoutDirection.current
   val viewConfiguration = LocalViewConfiguration.current
   ReusableComposeNode<View, Applier<Any>>(
     factory = ViewHelper.Constructor,
     update = {
-      set(compositeKeyHash, ViewHelper.SetCompositeKeyHash)
+      set(compositeKeyHash, ViewHelper.SetCompositeKeyHashCode)
       set(modifier, ViewHelper.SetModifier)
       set(measurePolicy, ViewHelper.SetMeasurePolicy)
       set(density, ViewHelper.SetDensity)
       set(layoutDirection, ViewHelper.SetLayoutDirection)
       set(viewConfiguration, ViewHelper.SetViewConfiguration)
     },
-    content = content
+    content = content,
   )
 }
 
 @Composable
 @NonRestartableComposable
 private fun LayoutLike(modifier: Modifier, measurePolicy: MeasurePolicy) {
-  val compositeKeyHash = currentCompositeKeyHash
+  val compositeKeyHash = currentCompositeKeyHashCode
   val density = LocalDensity.current
   val layoutDirection = LocalLayoutDirection.current
   val viewConfiguration = LocalViewConfiguration.current
   ReusableComposeNode<View, Applier<Any>>(
     factory = ViewHelper.Constructor,
     update = {
-      set(compositeKeyHash, ViewHelper.SetCompositeKeyHash)
+      set(compositeKeyHash, ViewHelper.SetCompositeKeyHashCode)
       set(modifier, ViewHelper.SetModifier)
       set(measurePolicy, ViewHelper.SetMeasurePolicy)
       set(density, ViewHelper.SetDensity)
       set(layoutDirection, ViewHelper.SetLayoutDirection)
       set(viewConfiguration, ViewHelper.SetViewConfiguration)
-    }
+    },
   )
 }
 
@@ -145,16 +137,14 @@ private interface Modifier {
 
 @Immutable
 private object Arrangement {
-  @Stable
-  interface Vertical
+  @Stable interface Vertical
 
   @Stable val Top = object : Vertical {}
 }
 
 @Immutable
 private object Alignment {
-  @Stable
-  interface Horizontal
+  @Stable interface Horizontal
 
   @Stable val Start = object : Horizontal {}
 }
@@ -168,25 +158,20 @@ private fun SpacerLike(modifier: Modifier) {
   LayoutLike(measurePolicy = SpacerMeasurePolicy, modifier = modifier)
 }
 
-@Immutable
-private interface ColumnScope
+@Immutable private interface ColumnScope
 
 private object ColumnScopeInstance : ColumnScope
 
 // A stable version of Column used for group size tests
 @Composable
 private inline fun ColumnLike(
-    modifier: Modifier = Modifier,
-    verticalArrangement: Arrangement.Vertical = Arrangement.Top,
-    horizontalAlignment: Alignment.Horizontal = Alignment.Start,
-    content: @Composable ColumnScope.() -> Unit,
+  modifier: Modifier = Modifier,
+  verticalArrangement: Arrangement.Vertical = Arrangement.Top,
+  horizontalAlignment: Alignment.Horizontal = Alignment.Start,
+  content: @Composable ColumnScope.() -> Unit,
 ) {
   val measurePolicy = columnMeasurePolicy(verticalArrangement, horizontalAlignment)
-  LayoutLike(
-    content = { ColumnScopeInstance.content() },
-    measurePolicy = measurePolicy,
-    modifier = modifier
-  )
+  LayoutLike(modifier = modifier, measurePolicy = measurePolicy) { ColumnScopeInstance.content() }
 }
 
 private object DefaultColumnRowMeasurePolicy : MeasurePolicy {
@@ -195,8 +180,8 @@ private object DefaultColumnRowMeasurePolicy : MeasurePolicy {
 
 @Composable
 private fun columnMeasurePolicy(
-    verticalArrangement: Arrangement.Vertical,
-    horizontalAlignment: Alignment.Horizontal,
+  verticalArrangement: Arrangement.Vertical,
+  horizontalAlignment: Alignment.Horizontal,
 ) =
   if (verticalArrangement == Arrangement.Top && horizontalAlignment == Alignment.Start) {
     DefaultColumnRowMeasurePolicy
@@ -230,12 +215,9 @@ private value class TextUnit(val packedValue: Long) {
   }
 }
 
-@JvmInline
-value class FontStyle(val value: Int)
+@JvmInline value class FontStyle(val value: Int)
 
-@Immutable
-@Suppress("unused")
-private class FontWeight(val weight: Int)
+@Immutable @Suppress("unused") private class FontWeight(val weight: Int)
 
 @Immutable
 @Suppress("UNUSED_PARAMETER")
@@ -250,13 +232,9 @@ private sealed class FontFamily(canLoadSynchronously: Boolean) {
 
 private val LocalFontFamilyResolver = staticCompositionLocalOf { FontFamily.Resolver.Default }
 
-@Immutable
-@Suppress("unused")
-private class TextDecoration(val mask: Int)
+@Immutable @Suppress("unused") private class TextDecoration(val mask: Int)
 
-@JvmInline
-@Suppress("unused")
-private value class TextAlign(val value: Int)
+@JvmInline @Suppress("unused") private value class TextAlign(val value: Int)
 
 @JvmInline
 private value class TextOverflow(val value: Int) {
@@ -270,28 +248,28 @@ private class TextLayoutResult
 @Immutable
 @Suppress("unused")
 private class TextStyle(
-    val color: Color = Color.Unspecified,
-    val fontSize: TextUnit = TextUnit.Unspecified,
-    val fontWeight: FontWeight? = null,
-    val textAlign: TextAlign? = null,
-    val lineHeight: TextUnit = TextUnit.Unspecified,
-    val fontFamily: FontFamily? = null,
-    val textDecoration: TextDecoration? = null,
-    val fontStyle: FontStyle? = null,
-    val letterSpacing: TextUnit = TextUnit.Unspecified,
+  val color: Color = Color.Unspecified,
+  val fontSize: TextUnit = TextUnit.Unspecified,
+  val fontWeight: FontWeight? = null,
+  val textAlign: TextAlign? = null,
+  val lineHeight: TextUnit = TextUnit.Unspecified,
+  val fontFamily: FontFamily? = null,
+  val textDecoration: TextDecoration? = null,
+  val fontStyle: FontStyle? = null,
+  val letterSpacing: TextUnit = TextUnit.Unspecified,
 ) {
   @Stable
   @Suppress("UNUSED_PARAMETER")
   fun merge2(
-      color: Color,
-      fontSize: TextUnit,
-      fontWeight: FontWeight?,
-      textAlign: TextAlign?,
-      lineHeight: TextUnit,
-      fontFamily: FontFamily?,
-      textDecoration: TextDecoration?,
-      fontStyle: FontStyle?,
-      letterSpacing: TextUnit,
+    color: Color,
+    fontSize: TextUnit,
+    fontWeight: FontWeight?,
+    textAlign: TextAlign?,
+    lineHeight: TextUnit,
+    fontFamily: FontFamily?,
+    textDecoration: TextDecoration?,
+    fontStyle: FontStyle?,
+    letterSpacing: TextUnit,
   ): TextStyle {
     return this
   }
@@ -322,23 +300,23 @@ private val LocalSelectionRegistrar =
 
 @Composable
 private fun TextLike(
-    text: String,
-    modifier: Modifier = Modifier,
-    color: Color = Color.Unspecified,
-    fontSize: TextUnit = TextUnit.Unspecified,
-    fontStyle: FontStyle? = null,
-    fontWeight: FontWeight? = null,
-    fontFamily: FontFamily? = null,
-    letterSpacing: TextUnit = TextUnit.Unspecified,
-    textDecoration: TextDecoration? = null,
-    textAlign: TextAlign? = null,
-    lineHeight: TextUnit = TextUnit.Unspecified,
-    overflow: TextOverflow = TextOverflow.Clip,
-    softWrap: Boolean = true,
-    maxLines: Int = Int.MAX_VALUE,
-    minLines: Int = 1,
-    onTextLayout: (TextLayoutResult) -> Unit = {},
-    style: TextStyle = LocalTextStyle.current,
+  text: String,
+  modifier: Modifier = Modifier,
+  color: Color = Color.Unspecified,
+  fontSize: TextUnit = TextUnit.Unspecified,
+  fontStyle: FontStyle? = null,
+  fontWeight: FontWeight? = null,
+  fontFamily: FontFamily? = null,
+  letterSpacing: TextUnit = TextUnit.Unspecified,
+  textDecoration: TextDecoration? = null,
+  textAlign: TextAlign? = null,
+  lineHeight: TextUnit = TextUnit.Unspecified,
+  overflow: TextOverflow = TextOverflow.Clip,
+  softWrap: Boolean = true,
+  maxLines: Int = Int.MAX_VALUE,
+  minLines: Int = 1,
+  onTextLayout: (TextLayoutResult) -> Unit = {},
+  style: TextStyle = LocalTextStyle.current,
 ) {
   val localColor = LocalContentColor.current
   val localAlpha = LocalContentAlpha.current
@@ -354,7 +332,7 @@ private fun TextLike(
       fontFamily = fontFamily,
       textDecoration = textDecoration,
       fontStyle = fontStyle,
-      letterSpacing = letterSpacing
+      letterSpacing = letterSpacing,
     )
   EmptyBasicTextLikeComposable(
     text = text,
@@ -364,7 +342,7 @@ private fun TextLike(
     overflow = overflow,
     softWrap = softWrap,
     maxLines = maxLines,
-    minLines = minLines
+    minLines = minLines,
   )
 }
 
@@ -372,21 +350,21 @@ private fun TextLike(
 @Suppress("UNUSED_PARAMETER")
 @Composable
 private fun EmptyBasicTextLikeComposable(
-    text: String,
-    modifier: Modifier = Modifier,
-    style: TextStyle = TextStyle.Default,
-    onTextLayout: (TextLayoutResult) -> Unit = {},
-    overflow: TextOverflow = TextOverflow.Clip,
-    softWrap: Boolean = true,
-    maxLines: Int = Int.MAX_VALUE,
-    minLines: Int = 1,
+  text: String,
+  modifier: Modifier = Modifier,
+  style: TextStyle = TextStyle.Default,
+  onTextLayout: (TextLayoutResult) -> Unit = {},
+  overflow: TextOverflow = TextOverflow.Clip,
+  softWrap: Boolean = true,
+  maxLines: Int = Int.MAX_VALUE,
+  minLines: Int = 1,
 ) = Unit
 
 private fun CompositionTestScope.slotExpect(
-    name: String,
-    noMoreGroupsThan: Int,
-    noMoreSlotsThan: Int,
-    content: @Composable () -> Unit,
+  name: String,
+  noMoreGroupsThan: Int,
+  noMoreSlotsThan: Int,
+  content: @Composable () -> Unit,
 ) {
   var compositionData: CompositionData? = null
   compose {
@@ -413,8 +391,7 @@ private fun CompositionTestScope.slotExpect(
   }
 }
 
-@Suppress("unused")
-private class AnnotatedString(val text: String)
+@Suppress("unused") private class AnnotatedString(val text: String)
 
 @Suppress("unused")
 private class TextState(val textDelegate: TextDelegate, val selectionId: Long) {
@@ -424,14 +401,14 @@ private class TextState(val textDelegate: TextDelegate, val selectionId: Long) {
 
 @Suppress("unused")
 private class TextDelegate(
-    val text: AnnotatedString,
-    val style: TextStyle,
-    val maxLines: Int = Int.MAX_VALUE,
-    val minLines: Int = 1,
-    val softWrap: Boolean = true,
-    val overflow: TextOverflow = TextOverflow.Clip,
-    val density: Int,
-    val fontFamilyResolver: FontFamily.Resolver,
+  val text: AnnotatedString,
+  val style: TextStyle,
+  val maxLines: Int = Int.MAX_VALUE,
+  val minLines: Int = 1,
+  val softWrap: Boolean = true,
+  val overflow: TextOverflow = TextOverflow.Clip,
+  val density: Int,
+  val fontFamilyResolver: FontFamily.Resolver,
 )
 
 @Suppress("UNUSED_PARAMETER")
@@ -468,14 +445,14 @@ private val LocalTextSelectionColors = staticCompositionLocalOf { TextSelectionC
 
 @Composable
 private fun BasicTextLike(
-    text: String,
-    modifier: Modifier = Modifier,
-    style: TextStyle = TextStyle.Default,
-    onTextLayout: (TextLayoutResult) -> Unit = {},
-    overflow: TextOverflow = TextOverflow.Clip,
-    softWrap: Boolean = true,
-    maxLines: Int = Int.MAX_VALUE,
-    minLines: Int = 1,
+  text: String,
+  modifier: Modifier = Modifier,
+  style: TextStyle = TextStyle.Default,
+  onTextLayout: (TextLayoutResult) -> Unit = {},
+  overflow: TextOverflow = TextOverflow.Clip,
+  softWrap: Boolean = true,
+  maxLines: Int = Int.MAX_VALUE,
+  minLines: Int = 1,
 ) {
   // selection registrar, if no SelectionContainer is added ambient value will be null
   val selectionRegistrar = LocalSelectionRegistrar.current
@@ -512,7 +489,7 @@ private fun BasicTextLike(
           maxLines = maxLines,
           minLines = minLines,
         ),
-        selectableId
+        selectableId,
       )
     )
   }
@@ -546,19 +523,19 @@ private fun BasicTextLike(
 
 @Composable
 private fun CheckboxLike(
-    checked: Boolean,
-    onCheckedChange: ((Boolean) -> Unit)?,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
+  checked: Boolean,
+  onCheckedChange: ((Boolean) -> Unit)?,
+  modifier: Modifier = Modifier,
+  enabled: Boolean = true,
 ) {
   TriStateCheckboxLike(
     state = ToggleableState(checked),
     onClick =
-    if (onCheckedChange != null) {
-      { onCheckedChange(!checked) }
-    } else null,
+      if (onCheckedChange != null) {
+        { onCheckedChange(!checked) }
+      } else null,
     enabled = enabled,
-    modifier = modifier
+    modifier = modifier,
   )
 }
 
@@ -566,7 +543,7 @@ private fun CheckboxLike(
 private enum class ToggleableState {
   On,
   Off,
-  Indeterminate
+  Indeterminate,
 }
 
 private fun ToggleableState(value: Boolean) = if (value) ToggleableState.On else ToggleableState.Off
@@ -574,10 +551,10 @@ private fun ToggleableState(value: Boolean) = if (value) ToggleableState.On else
 @Suppress("UNUSED_PARAMETER")
 @Composable
 private fun TriStateCheckboxLike(
-    state: ToggleableState,
-    onClick: (() -> Unit)?,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
+  state: ToggleableState,
+  onClick: (() -> Unit)?,
+  modifier: Modifier = Modifier,
+  enabled: Boolean = true,
 ) {
   CheckboxImplLike(enabled = enabled, value = state, modifier = modifier)
 }

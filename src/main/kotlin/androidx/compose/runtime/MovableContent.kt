@@ -16,6 +16,8 @@
 
 package androidx.compose.runtime
 
+import androidx.compose.runtime.annotation.RememberInComposition
+
 /**
  * Convert a lambda into one that moves the remembered state and nodes created in a previous call to
  * the new location it is called.
@@ -33,9 +35,9 @@ package androidx.compose.runtime
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun movableContentOf(content: @Composable () -> Unit): @Composable () -> Unit {
-  val movableContent = MovableContent<Unit>({ content() })
-  return { currentComposer.insertMovableContent(movableContent, Unit) }
+@RememberInComposition fun movableContentOf(content: @Composable () -> Unit): @Composable () -> Unit {
+  val movableContent = MovableContent<Nothing?>({ content() })
+  return { currentComposer.insertMovableContent(movableContent, null) }
 }
 
 /**
@@ -55,7 +57,7 @@ fun movableContentOf(content: @Composable () -> Unit): @Composable () -> Unit {
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <P> movableContentOf(content: @Composable (P) -> Unit): @Composable (P) -> Unit {
+@RememberInComposition fun <P> movableContentOf(content: @Composable (P) -> Unit): @Composable (P) -> Unit {
   val movableContent = MovableContent(content)
   return { currentComposer.insertMovableContent(movableContent, it) }
 }
@@ -77,7 +79,9 @@ fun <P> movableContentOf(content: @Composable (P) -> Unit): @Composable (P) -> U
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <P1, P2> movableContentOf(content: @Composable (P1, P2) -> Unit): @Composable (P1, P2) -> Unit {
+@RememberInComposition fun <P1, P2> movableContentOf(
+  content: @Composable (P1, P2) -> Unit,
+): @Composable (P1, P2) -> Unit {
   val movableContent = MovableContent<Pair<P1, P2>> { content(it.first, it.second) }
   return { p1, p2 -> currentComposer.insertMovableContent(movableContent, p1 to p2) }
 }
@@ -99,14 +103,14 @@ fun <P1, P2> movableContentOf(content: @Composable (P1, P2) -> Unit): @Composabl
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <P1, P2, P3> movableContentOf(
+@RememberInComposition fun <P1, P2, P3> movableContentOf(
   content: @Composable (P1, P2, P3) -> Unit,
 ): @Composable (P1, P2, P3) -> Unit {
   val movableContent =
-    MovableContent<Pair<Pair<P1, P2>, P3>> {
-      content(it.first.first, it.first.second, it.second)
-    }
-  return { p1, p2, p3 -> currentComposer.insertMovableContent(movableContent, (p1 to p2) to p3) }
+    MovableContent<Triple<P1, P2, P3>> { content(it.first, it.second, it.third) }
+  return { p1, p2, p3 ->
+    currentComposer.insertMovableContent(movableContent, Triple(p1, p2, p3))
+  }
 }
 
 /**
@@ -126,15 +130,16 @@ fun <P1, P2, P3> movableContentOf(
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <P1, P2, P3, P4> movableContentOf(
+@RememberInComposition fun <P1, P2, P3, P4> movableContentOf(
   content: @Composable (P1, P2, P3, P4) -> Unit,
 ): @Composable (P1, P2, P3, P4) -> Unit {
   val movableContent =
-    MovableContent<Pair<Pair<P1, P2>, Pair<P3, P4>>> {
-      content(it.first.first, it.first.second, it.second.first, it.second.second)
+    MovableContent<Array<Any?>> { (p1, p2, p3, p4) ->
+      @Suppress("UNCHECKED_CAST") // Types are guaranteed below.
+      content(p1 as P1, p2 as P2, p3 as P3, p4 as P4)
     }
   return { p1, p2, p3, p4 ->
-    currentComposer.insertMovableContent(movableContent, (p1 to p2) to (p3 to p4))
+    currentComposer.insertMovableContent(movableContent, arrayOf(p1, p2, p3, p4))
   }
 }
 
@@ -155,7 +160,9 @@ fun <P1, P2, P3, P4> movableContentOf(
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <R> movableContentWithReceiverOf(content: @Composable R.() -> Unit): @Composable R.() -> Unit {
+@RememberInComposition fun <R> movableContentWithReceiverOf(
+  content: @Composable R.() -> Unit,
+): @Composable R.() -> Unit {
   val movableContent = MovableContent<R>({ it.content() })
   return { currentComposer.insertMovableContent(movableContent, this) }
 }
@@ -177,7 +184,7 @@ fun <R> movableContentWithReceiverOf(content: @Composable R.() -> Unit): @Compos
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <R, P> movableContentWithReceiverOf(
+@RememberInComposition fun <R, P> movableContentWithReceiverOf(
   content: @Composable R.(P) -> Unit,
 ): @Composable R.(P) -> Unit {
   val movableContent = MovableContent<Pair<R, P>>({ it.first.content(it.second) })
@@ -201,12 +208,11 @@ fun <R, P> movableContentWithReceiverOf(
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <R, P1, P2> movableContentWithReceiverOf(
+@RememberInComposition fun <R, P1, P2> movableContentWithReceiverOf(
   content: @Composable R.(P1, P2) -> Unit,
 ): @Composable R.(P1, P2) -> Unit {
-  val movableContent =
-    MovableContent<Pair<Pair<R, P1>, P2>> { it.first.first.content(it.first.second, it.second) }
-  return { p1, p2 -> currentComposer.insertMovableContent(movableContent, (this to p1) to p2) }
+  val movableContent = MovableContent<Triple<R, P1, P2>> { it.first.content(it.second, it.third) }
+  return { p1, p2 -> currentComposer.insertMovableContent(movableContent, Triple(this, p1, p2)) }
 }
 
 /**
@@ -226,15 +232,16 @@ fun <R, P1, P2> movableContentWithReceiverOf(
  * @return A tracking composable lambda
  */
 @OptIn(InternalComposeApi::class)
-fun <R, P1, P2, P3> movableContentWithReceiverOf(
+@RememberInComposition fun <R, P1, P2, P3> movableContentWithReceiverOf(
   content: @Composable R.(P1, P2, P3) -> Unit,
 ): @Composable R.(P1, P2, P3) -> Unit {
   val movableContent =
-    MovableContent<Pair<Pair<R, P1>, Pair<P2, P3>>> {
-      it.first.first.content(it.first.second, it.second.first, it.second.second)
+    MovableContent<Array<Any?>> { (r, p1, p2, p3) ->
+      @Suppress("UNCHECKED_CAST") // Types are guaranteed below.
+      (r as R).content(p1 as P1, p2 as P2, p3 as P3)
     }
   return { p1, p2, p3 ->
-    currentComposer.insertMovableContent(movableContent, (this to p1) to (p2 to p3))
+    currentComposer.insertMovableContent(movableContent, arrayOf(this, p1, p2, p3))
   }
 }
 

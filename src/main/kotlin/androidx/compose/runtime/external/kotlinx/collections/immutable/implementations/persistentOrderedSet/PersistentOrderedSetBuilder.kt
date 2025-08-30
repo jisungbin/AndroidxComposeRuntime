@@ -7,7 +7,6 @@ package androidx.compose.runtime.external.kotlinx.collections.immutable.implemen
 
 import androidx.compose.runtime.external.kotlinx.collections.immutable.PersistentSet
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.EndOfChain
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
 
 internal class PersistentOrderedSetBuilder<E>(private var set: PersistentOrderedSet<E>) : AbstractMutableSet<E>(), PersistentSet.Builder<E> {
   internal var firstElement = set.firstElement

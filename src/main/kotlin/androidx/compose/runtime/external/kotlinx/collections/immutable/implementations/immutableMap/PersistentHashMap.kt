@@ -89,7 +89,6 @@ internal open class PersistentHashMap<K, V>(
 
   internal companion object {
     private val EMPTY = PersistentHashMap(TrieNode.EMPTY, 0)
-
     @Suppress("UNCHECKED_CAST")
     internal fun <K, V> emptyOf(): PersistentHashMap<K, V> = EMPTY as PersistentHashMap<K, V>
   }

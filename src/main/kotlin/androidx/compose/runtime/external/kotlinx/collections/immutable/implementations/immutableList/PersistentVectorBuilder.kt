@@ -9,7 +9,6 @@ import androidx.compose.runtime.external.kotlinx.collections.immutable.Persisten
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.ListImplementation.checkElementIndex
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.ListImplementation.checkPositionIndex
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.MutabilityOwnership
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
 import androidx.compose.runtime.requirePrecondition
 
 internal class PersistentVectorBuilder<E>(
@@ -777,7 +776,6 @@ internal class PersistentVectorBuilder<E>(
     }
 
     val lastIndex = indexSegment(index, shift)
-
     @Suppress("UNCHECKED_CAST")
     val newChild = nullifyAfter(root[lastIndex] as Array<Any?>, index, shift - LOG_MAX_BUFFER_SIZE)
 

@@ -30,10 +30,10 @@ package androidx.compose.runtime
  * `data` classes that only contain `val` properties that do not have custom getters can safely be
  * marked as [Immutable] if the types of properties are either primitive types or also [Immutable]:
  *
- * @sample androidx.compose.runtime.samples.simpleImmutableClass
+ * @sample androidx.compose.runtime.annotation.samples.simpleImmutableClass
  *
- * Marking `Person` immutable allows calls the `PersonView` [Composable] function to be skipped if
- * it is the same `person` as it was during the last composition.
+ * Marking `Person` immutable allows calls the `PersonView` [androidx.compose.runtime.Composable]
+ * function to be skipped if it is the same `person` as it was during the last composition.
  *
  * @see StableMarker
  */

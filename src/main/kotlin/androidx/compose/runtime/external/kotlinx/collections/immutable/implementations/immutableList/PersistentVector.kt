@@ -8,7 +8,6 @@ package androidx.compose.runtime.external.kotlinx.collections.immutable.implemen
 import androidx.compose.runtime.external.kotlinx.collections.immutable.PersistentList
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.ListImplementation.checkElementIndex
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.ListImplementation.checkPositionIndex
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
 import androidx.compose.runtime.requirePrecondition
 
 /**
@@ -190,7 +189,6 @@ internal class PersistentVector<E>(
     }
     val tailCarry = ObjectRef(null)
     val newRoot = pullLastBuffer(root, shift, rootSize - 1, tailCarry)!!
-
     @Suppress("UNCHECKED_CAST")
     val newTail = tailCarry.value as Array<Any?>
 

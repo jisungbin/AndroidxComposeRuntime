@@ -45,12 +45,18 @@ internal class FixupList : OperationsDebugStringFormattable() {
     applier: Applier<*>,
     slots: SlotWriter,
     rememberManager: RememberManager,
+    errorContext: OperationErrorContext?,
   ) {
     runtimeCheck(pendingOperations.isEmpty()) {
       "FixupList has pending fixup operations that were not realized. " +
         "Were there mismatched insertNode() and endNodeInsert() calls?"
     }
-    operations.executeAndFlushAllPendingOperations(applier, slots, rememberManager)
+    operations.executeAndFlushAllPendingOperations(
+      applier,
+      slots,
+      rememberManager,
+      errorContext,
+    )
   }
 
   fun createAndInsertNode(factory: () -> Any?, insertIndex: Int, groupAnchor: Anchor) {

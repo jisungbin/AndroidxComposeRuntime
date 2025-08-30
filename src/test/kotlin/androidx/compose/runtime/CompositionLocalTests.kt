@@ -18,6 +18,7 @@ package androidx.compose.runtime
 
 import androidx.compose.runtime.external.kotlinx.collections.immutable.persistentHashMapOf
 import androidx.compose.runtime.mock.EmptyApplier
+import androidx.compose.runtime.mock.Linear
 import androidx.compose.runtime.mock.MockViewValidator
 import androidx.compose.runtime.mock.TestMonotonicFrameClock
 import androidx.compose.runtime.mock.Text
@@ -65,7 +66,7 @@ class CompositionLocalTests {
         LocalSomeTextComposition provides "Test1",
         LocalSomeIntComposition provides 12,
         LocalSomeOtherIntProvider provides 42,
-        LocalSomeStaticInt provides 50
+        LocalSomeStaticInt provides 50,
       ) {
         assertEquals("Test1", LocalSomeTextComposition.current)
         assertEquals(12, LocalSomeIntComposition.current)
@@ -73,7 +74,7 @@ class CompositionLocalTests {
         assertEquals(50, LocalSomeStaticInt.current)
         CompositionLocalProvider(
           LocalSomeTextComposition provides "Test2",
-          LocalSomeStaticInt provides 60
+          LocalSomeStaticInt provides 60,
         ) {
           assertEquals("Test2", LocalSomeTextComposition.current)
           assertEquals(12, LocalSomeIntComposition.current)
@@ -146,7 +147,7 @@ class CompositionLocalTests {
 
       CompositionLocalProvider(
         LocalSomeTextComposition provides someText,
-        LocalSomeIntComposition provides 0
+        LocalSomeIntComposition provides 0,
       ) {
         ReadStringCompositionLocal(compositionLocal = LocalSomeTextComposition)
 
@@ -184,14 +185,12 @@ class CompositionLocalTests {
 
       CompositionLocalProvider(
         staticSomeTextCompositionLocal provides someText,
-        staticSomeIntCompositionLocal provides 0
+        staticSomeIntCompositionLocal provides 0,
       ) {
         assertEquals(someText, staticSomeTextCompositionLocal.current)
         assertEquals(0, staticSomeIntCompositionLocal.current)
 
-        ReadStringCompositionLocal(
-          compositionLocal = staticSomeTextCompositionLocal,
-        )
+        ReadStringCompositionLocal(compositionLocal = staticSomeTextCompositionLocal)
 
         TestSubcomposition {
           assertEquals(someText, staticSomeTextCompositionLocal.current)
@@ -226,11 +225,9 @@ class CompositionLocalTests {
 
       CompositionLocalProvider(
         LocalSomeTextComposition provides someText,
-        LocalSomeIntComposition provides 0
+        LocalSomeIntComposition provides 0,
       ) {
-        ReadStringCompositionLocal(
-          compositionLocal = LocalSomeTextComposition,
-        )
+        ReadStringCompositionLocal(compositionLocal = LocalSomeTextComposition)
 
         doSubCompose = testDeferredSubcomposition {
           assertEquals(someText, LocalSomeTextComposition.current)
@@ -271,7 +268,7 @@ class CompositionLocalTests {
 
       CompositionLocalProvider(
         staticSomeTextCompositionLocal provides someText,
-        staticSomeIntCompositionLocal provides 0
+        staticSomeIntCompositionLocal provides 0,
       ) {
         assertEquals(someText, staticSomeTextCompositionLocal.current)
         assertEquals(0, staticSomeIntCompositionLocal.current)
@@ -318,7 +315,7 @@ class CompositionLocalTests {
 
       CompositionLocalProvider(
         staticSomeTextCompositionLocal provides someText,
-        staticSomeIntCompositionLocal provides 0
+        staticSomeIntCompositionLocal provides 0,
       ) {
         assertEquals(someText, staticSomeTextCompositionLocal.current)
         assertEquals(0, staticSomeIntCompositionLocal.current)
@@ -427,7 +424,7 @@ class CompositionLocalTests {
       if (includeProviders) {
         CompositionLocalProvider(
           local provides providedValue.value,
-          static provides providedStatic.value
+          static provides providedStatic.value,
         ) {
           Validate(providedValue.value)
         }
@@ -461,9 +458,7 @@ class CompositionLocalTests {
 
     @Composable
     fun Test() {
-      CompositionLocalProvider(
-        LocalTest provides 1,
-      ) {
+      CompositionLocalProvider(LocalTest provides 1) {
         CompositionLocalProvider(
           *locals.map { it provides 3 }.toTypedArray(),
           LocalTest provides 2,
@@ -531,6 +526,7 @@ class CompositionLocalTests {
     var provided: Array<ProvidedValue<Int>> by mutableStateOf(emptyArray())
 
     var actualValues = emptySet<Any>()
+    var composition2ContentExecutionCount = 0
 
     @Composable
     fun LocalsConsumer() {
@@ -542,12 +538,8 @@ class CompositionLocalTests {
         val composition2 = Composition(EmptyApplier(), recomposer)
         composition2.setContent {
           CompositionLocalProvider(locals) {
-            actualValues =
-              setOf(
-                local1.current,
-                local2.current,
-                staticLocal.current,
-              )
+            actualValues = setOf(local1.current, local2.current, staticLocal.current)
+            composition2ContentExecutionCount++
           }
         }
         onDispose {
@@ -561,38 +553,55 @@ class CompositionLocalTests {
 
     advance()
     assertEquals(setOf(0, 0, 0), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = arrayOf(local1 provides 1)
     advance()
     assertEquals(setOf(1, 0, 0), actualValues)
+    assertEquals(2, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = arrayOf(local1 provides 2)
     advance()
     assertEquals(setOf(2, 0, 0), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = arrayOf(local1 provides 2, staticLocal provides 1)
     advance()
     assertEquals(setOf(2, 0, 1), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = arrayOf(local1 provides 2, staticLocal provides 2)
     advance()
     assertEquals(setOf(2, 0, 2), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = arrayOf(local1 provides 1, staticLocal provides 1)
     advance()
     assertEquals(setOf(1, 0, 1), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = arrayOf(local1 provides 1, local2 provides 1, staticLocal provides 1)
     advance()
     assertEquals(setOf(1, 1, 1), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = arrayOf(local1 provides 1, staticLocal provides 1)
     advance()
     assertEquals(setOf(1, 0, 1), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
 
+    composition2ContentExecutionCount = 0
     provided = emptyArray()
     advance()
     assertEquals(setOf(0, 0, 0), actualValues)
+    assertEquals(1, composition2ContentExecutionCount)
   }
 
   @Test // Regression test for b/233064044
@@ -679,6 +688,29 @@ class CompositionLocalTests {
     }
   }
 
+  @Test
+  fun testValueChangeWhileRemoving() = compositionTest {
+    val LocalText = compositionLocalOf { "" }
+    var showContent by mutableStateOf(true)
+    var text by mutableStateOf("Hello")
+
+    compose {
+      if (showContent) {
+        Linear {
+          CompositionLocalProvider(LocalText provides text) { Text(LocalText.current) }
+        }
+      }
+    }
+
+    validate { Linear { Text("Hello") } }
+
+    text = "Goodbye"
+    showContent = false
+    expectChanges()
+
+    validate { /* Empty Composition */ }
+  }
+
   @Suppress("LocalVariableName")
   @Test
   // Validate androidx.compose.runtime.samples.compositionLocalComputedAfterProvidingLocal
@@ -731,24 +763,148 @@ class CompositionLocalTests {
 
     compose { App() }
   }
+
+  @Test // 374263387
+  fun staticLocalUpdateInvalidatesCorrectly_startProvide() = compositionTest {
+    val LocalValue = staticCompositionLocalOf<Boolean> { error("Not provided") }
+    val LocalOtherValue = staticCompositionLocalOf<Int> { error("Not provided") }
+    var value by mutableStateOf(false)
+    var valueSeen = false
+    compose {
+      CompositionLocalProvider(LocalValue provides value) {
+        CompositionLocalProvider(LocalOtherValue providesDefault 1) {
+          CompositionLocalProvider(LocalOtherValue providesDefault 2) {
+            valueSeen = LocalValue.current
+          }
+        }
+      }
+    }
+    assertFalse(valueSeen)
+    value = true
+    advance()
+    assertTrue(valueSeen)
+  }
+
+  @Test
+  fun testProvidesCompositionLocalsAndReturnResult() = compositionTest {
+    val expected = "expected"
+
+    compose {
+      assertEquals("Default", LocalSomeTextComposition.current)
+      assertEquals(1, LocalSomeIntComposition.current)
+      val result =
+        withCompositionLocals(
+          LocalSomeTextComposition provides "Test1",
+          LocalSomeIntComposition provides 12,
+          LocalSomeOtherIntProvider provides 42,
+          LocalSomeStaticInt provides 50,
+        ) {
+          assertEquals("Test1", LocalSomeTextComposition.current)
+          assertEquals(12, LocalSomeIntComposition.current)
+          assertEquals(42, LocalSomeOtherIntComposition.current)
+          assertEquals(50, LocalSomeStaticInt.current)
+          CompositionLocalProvider(
+            LocalSomeTextComposition provides "Test2",
+            LocalSomeStaticInt provides 60,
+          ) {
+            assertEquals("Test2", LocalSomeTextComposition.current)
+            assertEquals(12, LocalSomeIntComposition.current)
+            assertEquals(42, LocalSomeOtherIntComposition.current)
+            assertEquals(60, LocalSomeStaticInt.current)
+          }
+          assertEquals("Test1", LocalSomeTextComposition.current)
+          assertEquals(12, LocalSomeIntComposition.current)
+          assertEquals(42, LocalSomeOtherIntComposition.current)
+          assertEquals(50, LocalSomeStaticInt.current)
+
+          return@withCompositionLocals expected
+        }
+      assertEquals("Default", LocalSomeTextComposition.current)
+      assertEquals(1, LocalSomeIntComposition.current)
+      assertEquals(expected, result)
+    }
+  }
+
+  @Test
+  fun testProvidesSingleCompositionLocalAndReturnsResult() = compositionTest {
+    val expected = "expected"
+
+    compose {
+      assertEquals("Default", LocalSomeTextComposition.current)
+      val result =
+        withCompositionLocal(LocalSomeTextComposition provides "Test1") {
+          assertEquals("Test1", LocalSomeTextComposition.current)
+          CompositionLocalProvider(LocalSomeTextComposition provides "Test2") {
+            assertEquals("Test2", LocalSomeTextComposition.current)
+          }
+          assertEquals("Test1", LocalSomeTextComposition.current)
+
+          return@withCompositionLocal expected
+        }
+      assertEquals("Default", LocalSomeTextComposition.current)
+      assertEquals(expected, result)
+    }
+  }
+
+  @Test
+  fun testProvidesSingleCompositionLocalAndReturnsNestedResults() = compositionTest {
+    val expected = "expected"
+
+    compose {
+      assertEquals("Default", LocalSomeTextComposition.current)
+      val result =
+        withCompositionLocal(LocalSomeTextComposition provides "Test1") {
+          withCompositionLocal(LocalSomeTextComposition provides "Test2") {
+            assertEquals("Test2", LocalSomeTextComposition.current)
+            expected
+          }
+        }
+      assertEquals("Default", LocalSomeTextComposition.current)
+      assertEquals(expected, result)
+    }
+  }
+
+  fun staticLocalUpdateInvalidatesCorrectly_startProvides() = compositionTest {
+    val SomeValue = staticCompositionLocalOf { 0 }
+    val LocalValue = staticCompositionLocalOf<Boolean> { error("Not provided") }
+    val LocalOtherValue = staticCompositionLocalOf<Int> { error("Not provided") }
+    var value by mutableStateOf(false)
+    var valueSeen = false
+    compose {
+      CompositionLocalProvider(SomeValue provides 0, LocalValue provides value) {
+        CompositionLocalProvider(SomeValue provides 1, LocalOtherValue providesDefault 1) {
+          CompositionLocalProvider(
+            SomeValue provides 2,
+            LocalOtherValue providesDefault 2,
+          ) {
+            valueSeen = LocalValue.current
+          }
+        }
+      }
+    }
+    assertFalse(valueSeen)
+    value = true
+    advance()
+    assertTrue(valueSeen)
+  }
 }
 
-val cacheLocal = staticCompositionLocalOf { "Unset" }
+val LocalCache = staticCompositionLocalOf { "Unset" }
 
 @Composable
 fun CacheInvalidate(state: State<Int>) {
   Text("${state.value}")
-  Text(cacheLocal.current)
+  Text(LocalCache.current)
   CacheInvalidateSet {
     Text("${state.value}")
-    Text(cacheLocal.current)
+    Text(LocalCache.current)
   }
-  Text(cacheLocal.current)
+  Text(LocalCache.current)
 }
 
 @Composable
 fun CacheInvalidateSet(content: @Composable () -> Unit) {
-  CompositionLocalProvider(cacheLocal provides "Set") { content() }
+  CompositionLocalProvider(LocalCache provides "Set") { content() }
 }
 
 fun MockViewValidator.CacheInvalidate(state: State<Int>) {
@@ -761,5 +917,4 @@ fun MockViewValidator.CacheInvalidate(state: State<Int>) {
 
 data class SomeData(val value: String = "default")
 
-@Stable
-class StableRef<T>(var value: T)
+@Stable class StableRef<T>(var value: T)

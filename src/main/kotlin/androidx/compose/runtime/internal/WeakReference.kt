@@ -16,4 +16,5 @@
 
 package androidx.compose.runtime.internal
 
-internal class WeakReference<T : Any>(reference: T) : java.lang.ref.WeakReference<T>(reference)
+internal class WeakReference<T : Any>(reference: T) :
+  java.lang.ref.WeakReference<T>(reference)

@@ -25,7 +25,8 @@ import androidx.compose.runtime.IntStack
 import androidx.compose.runtime.InternalComposeApi
 import androidx.compose.runtime.MovableContentState
 import androidx.compose.runtime.MovableContentStateReference
-import androidx.compose.runtime.RememberObserver
+import androidx.compose.runtime.RecomposeScopeImpl
+import androidx.compose.runtime.RememberObserverHolder
 import androidx.compose.runtime.SlotReader
 import androidx.compose.runtime.SlotTable
 import androidx.compose.runtime.Stack
@@ -92,7 +93,7 @@ internal class ComposerChangeListWriter(
   // If an up is recorded before the corresponding down is realized then it is simply removed
   // from the downNodes stack.
   private var pendingUps = 0
-  private var pendingDownNodes = Stack<Any?>()
+  private val pendingDownNodes = Stack<Any?>()
 
   private var removeFrom = -1
   private var moveFrom = -1
@@ -188,8 +189,20 @@ internal class ComposerChangeListWriter(
     }
   }
 
-  fun remember(value: RememberObserver) {
+  fun remember(value: RememberObserverHolder) {
     changeList.pushRemember(value)
+  }
+
+  fun rememberPausingScope(scope: RecomposeScopeImpl) {
+    changeList.pushRememberPausingScope(scope)
+  }
+
+  fun startResumingScope(scope: RecomposeScopeImpl) {
+    changeList.pushStartResumingScope(scope)
+  }
+
+  fun endResumingScope(scope: RecomposeScopeImpl) {
+    changeList.pushEndResumingScope(scope)
   }
 
   fun updateValue(value: Any?, groupSlotIndex: Int) {
@@ -422,6 +435,7 @@ internal class ComposerChangeListWriter(
   }
 
   fun endMovableContentPlacement() {
+    pushPendingUpsAndDowns()
     changeList.pushEndMovableContentPlacement()
     writersReaderDelta = 0
   }
@@ -439,6 +453,16 @@ internal class ComposerChangeListWriter(
     startedGroup = false
     startedGroups.clear()
     writersReaderDelta = 0
+
+    implicitRootStart = true
+
+    pendingUps = 0
+    pendingDownNodes.clear()
+
+    removeFrom = -1
+    moveFrom = -1
+    moveTo = -1
+    moveCount = 0
   }
 
   fun deactivateCurrentGroup() {

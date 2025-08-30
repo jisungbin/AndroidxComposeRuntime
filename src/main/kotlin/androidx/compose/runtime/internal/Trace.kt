@@ -16,6 +16,10 @@
 
 package androidx.compose.runtime.internal
 
+import androidx.compose.runtime.internal.Trace.beginSection
+import androidx.compose.runtime.internal.Trace.endSection
+
+
 internal object Trace {
   /**
    * Writes a trace message to indicate that a given section of code has begun. This call must be
@@ -34,7 +38,7 @@ internal object Trace {
    *
    * @param token The instance returned from the corresponding call to [beginSection].
    */
-  fun endSection(token: Any?) = null
+  fun endSection(token: Any?): Any? = null
 }
 
 /**
@@ -42,10 +46,10 @@ internal object Trace {
  * [Trace.endSection].
  */
 internal inline fun <T> trace(sectionName: String, block: () -> T): T {
-  val token = Trace.beginSection(sectionName)
+  val token = beginSection(sectionName)
   try {
     return block()
   } finally {
-    Trace.endSection(token)
+    endSection(token)
   }
 }

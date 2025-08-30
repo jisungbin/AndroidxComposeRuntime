@@ -44,8 +44,7 @@ package androidx.compose.runtime
  * 1. have either [onRemembered] or [onAbandoned] called
  * 2. if [onRemembered] is called, [onForgotten] will eventually be called
  */
-@Suppress("CallbackName")
-interface RememberObserver {
+@Suppress("CallbackName") interface RememberObserver {
   /**
    * Called when this object is successfully remembered by a composition. This method is called on
    * the composition's **apply thread.**

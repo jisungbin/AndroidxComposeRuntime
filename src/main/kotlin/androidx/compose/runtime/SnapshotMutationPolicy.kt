@@ -34,8 +34,7 @@ import androidx.compose.runtime.snapshots.MutableSnapshot
  *
  * @sample androidx.compose.runtime.samples.counterSample
  */
-@JvmDefaultWithCompatibility
-interface SnapshotMutationPolicy<T> {
+@JvmDefaultWithCompatibility interface SnapshotMutationPolicy<T> {
   /**
    * Determine if setting a state value's are equivalent and should be treated as equal. If
    * [equivalent] returns `true` the new value is not considered a change.
@@ -63,8 +62,7 @@ interface SnapshotMutationPolicy<T> {
  * change. When applying a [MutableSnapshot], if the snapshot changes the value to the equivalent
  * value the parent snapshot has is not considered a conflict.
  */
-@Suppress("UNCHECKED_CAST")
-fun <T> referentialEqualityPolicy(): SnapshotMutationPolicy<T> =
+@Suppress("UNCHECKED_CAST") fun <T> referentialEqualityPolicy(): SnapshotMutationPolicy<T> =
   ReferentialEqualityPolicy as SnapshotMutationPolicy<T>
 
 private object ReferentialEqualityPolicy : SnapshotMutationPolicy<Any?> {
@@ -80,8 +78,7 @@ private object ReferentialEqualityPolicy : SnapshotMutationPolicy<Any?> {
  * change. When applying a [MutableSnapshot], if the snapshot changes the value to the equivalent
  * value the parent snapshot has is not considered a conflict.
  */
-@Suppress("UNCHECKED_CAST")
-fun <T> structuralEqualityPolicy(): SnapshotMutationPolicy<T> =
+@Suppress("UNCHECKED_CAST") fun <T> structuralEqualityPolicy(): SnapshotMutationPolicy<T> =
   StructuralEqualityPolicy as SnapshotMutationPolicy<T>
 
 private object StructuralEqualityPolicy : SnapshotMutationPolicy<Any?> {
@@ -97,8 +94,7 @@ private object StructuralEqualityPolicy : SnapshotMutationPolicy<Any?> {
  * [MutableSnapshot] that changes the state will always conflict with other snapshots that change
  * the same state.
  */
-@Suppress("UNCHECKED_CAST")
-fun <T> neverEqualPolicy(): SnapshotMutationPolicy<T> =
+@Suppress("UNCHECKED_CAST") fun <T> neverEqualPolicy(): SnapshotMutationPolicy<T> =
   NeverEqualPolicy as SnapshotMutationPolicy<T>
 
 private object NeverEqualPolicy : SnapshotMutationPolicy<Any?> {

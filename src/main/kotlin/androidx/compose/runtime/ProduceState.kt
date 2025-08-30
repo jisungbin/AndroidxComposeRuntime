@@ -69,8 +69,10 @@ private class ProduceStateScopeImpl<T>(
  * @sample androidx.compose.runtime.samples.ProduceState
  * @sample androidx.compose.runtime.samples.ProduceStateAwaitDispose
  */
-@Composable
-fun <T> produceState(initialValue: T, producer: suspend ProduceStateScope<T>.() -> Unit): State<T> {
+@Composable fun <T> produceState(
+  initialValue: T,
+  producer: suspend ProduceStateScope<T>.() -> Unit,
+): State<T> {
   val result = remember { mutableStateOf(initialValue) }
   LaunchedEffect(Unit) { ProduceStateScopeImpl(result, coroutineContext).producer() }
   return result
@@ -95,8 +97,7 @@ fun <T> produceState(initialValue: T, producer: suspend ProduceStateScope<T>.() 
  * @sample androidx.compose.runtime.samples.ProduceState
  * @sample androidx.compose.runtime.samples.ProduceStateAwaitDispose
  */
-@Composable
-fun <T> produceState(
+@Composable fun <T> produceState(
   initialValue: T,
   key1: Any?,
   producer: suspend ProduceStateScope<T>.() -> Unit,
@@ -125,8 +126,7 @@ fun <T> produceState(
  * @sample androidx.compose.runtime.samples.ProduceState
  * @sample androidx.compose.runtime.samples.ProduceStateAwaitDispose
  */
-@Composable
-fun <T> produceState(
+@Composable fun <T> produceState(
   initialValue: T,
   key1: Any?,
   key2: Any?,
@@ -156,8 +156,7 @@ fun <T> produceState(
  * @sample androidx.compose.runtime.samples.ProduceState
  * @sample androidx.compose.runtime.samples.ProduceStateAwaitDispose
  */
-@Composable
-fun <T> produceState(
+@Composable fun <T> produceState(
   initialValue: T,
   key1: Any?,
   key2: Any?,
@@ -188,8 +187,7 @@ fun <T> produceState(
  * @sample androidx.compose.runtime.samples.ProduceState
  * @sample androidx.compose.runtime.samples.ProduceStateAwaitDispose
  */
-@Composable
-fun <T> produceState(
+@Composable fun <T> produceState(
   initialValue: T,
   vararg keys: Any?,
   producer: suspend ProduceStateScope<T>.() -> Unit,

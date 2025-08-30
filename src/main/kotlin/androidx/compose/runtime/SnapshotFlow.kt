@@ -42,9 +42,9 @@ import kotlinx.coroutines.withContext
  * @param context [CoroutineContext] to use for collecting.
  */
 @Suppress("StateFlowValueCalledInComposition")
-@Composable
-fun <T> StateFlow<T>.collectAsState(context: CoroutineContext = EmptyCoroutineContext): State<T> =
-  collectAsState(value, context)
+@Composable fun <T> StateFlow<T>.collectAsState(
+  context: CoroutineContext = EmptyCoroutineContext,
+): State<T> = collectAsState(value, context)
 
 /**
  * Collects values from this [Flow] and represents its latest value via [State]. Every time there
@@ -55,8 +55,7 @@ fun <T> StateFlow<T>.collectAsState(context: CoroutineContext = EmptyCoroutineCo
  * @param initial the value of the state will have until the first flow value is emitted.
  * @param context [CoroutineContext] to use for collecting.
  */
-@Composable
-fun <T : R, R> Flow<T>.collectAsState(
+@Composable fun <T : R, R> Flow<T>.collectAsState(
   initial: R,
   context: CoroutineContext = EmptyCoroutineContext,
 ): State<R> =

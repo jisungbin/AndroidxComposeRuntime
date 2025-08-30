@@ -16,7 +16,9 @@
 
 package androidx.compose.runtime.tooling
 
+import androidx.compose.runtime.CompositionContext
 import androidx.compose.runtime.internal.JvmDefaultWithCompatibility
+import androidx.compose.runtime.rememberCompositionContext
 
 /**
  * A [CompositionData] is the data tracked by the composer during composition.
@@ -58,8 +60,7 @@ interface CompositionData {
  * access to data tracked during composition. The tools API should be used instead which provides a
  * more usable interpretation of the slot table.
  */
-@JvmDefaultWithCompatibility
-interface CompositionGroup : CompositionData {
+@JvmDefaultWithCompatibility interface CompositionGroup : CompositionData {
   /**
    * A value used to identify the group within its siblings and is typically a compiler generated
    * integer but can be an object if the [key] composable is used.
@@ -98,3 +99,36 @@ interface CompositionGroup : CompositionData {
   val slotsSize: Int
     get() = 0
 }
+
+/**
+ * [CompositionInstance] provides information about the composition of which a [CompositionData] is
+ * part.
+ */
+interface CompositionInstance {
+  /**
+   * The parent composition instance, if the instance is part of a sub-composition. If this is the
+   * root of a composition (such as the content of a ComposeView), then [parent] will be `null`.
+   */
+  val parent: CompositionInstance?
+
+  /** The [CompositionData] for the instance */
+  val data: CompositionData
+
+  /**
+   * Find the [CompositionGroup] that contains the [CompositionContext] created by a call to
+   * [rememberCompositionContext] that is the parent context for this composition. If this is the
+   * root of the composition (e.g. [parent] is `null`) then this method also returns `null`.
+   */
+  fun findContextGroup(): CompositionGroup?
+}
+
+/**
+ * Find the [CompositionInstance] associated with the root [CompositionData]. This is only valid for
+ * instances of [CompositionData] that are recorded in a [LocalInspectionTables] table directly.
+ *
+ * Even though [CompositionGroup]s implement the [CompositionData] interface, only the root
+ * [CompositionData] has an associated [CompositionInstance]. All [CompositionGroup] instances will
+ * return `null`.
+ */
+fun CompositionData.findCompositionInstance(): CompositionInstance? =
+  this as? CompositionInstance

@@ -7,7 +7,6 @@ package androidx.compose.runtime.external.kotlinx.collections.immutable.implemen
 
 import androidx.compose.runtime.external.kotlinx.collections.immutable.PersistentMap
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.EndOfChain
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
 
 internal class PersistentOrderedMapBuilder<K, V>(private var map: PersistentOrderedMap<K, V>) : AbstractMutableMap<K, V>(), PersistentMap.Builder<K, V> {
   internal var firstKey = map.firstKey

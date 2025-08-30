@@ -13,7 +13,6 @@ import androidx.compose.runtime.external.kotlinx.collections.immutable.mutate
 internal class Links(val previous: Any?, val next: Any?) {
   /** Constructs Links for a new single element */
   constructor() : this(EndOfChain, EndOfChain)
-
   /** Constructs Links for a new last element */
   constructor(previous: Any?) : this(previous, EndOfChain)
 

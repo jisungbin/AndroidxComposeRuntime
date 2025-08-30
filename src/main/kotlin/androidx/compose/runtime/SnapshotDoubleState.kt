@@ -20,15 +20,18 @@
 package androidx.compose.runtime
 
 import androidx.compose.runtime.internal.JvmDefaultWithCompatibility
-import androidx.compose.runtime.internal.equalsWithNanFix
 import androidx.compose.runtime.snapshots.AutoboxingStateValueProperty
+import androidx.compose.runtime.snapshots.GlobalSnapshot
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.snapshots.SnapshotId
 import androidx.compose.runtime.snapshots.SnapshotMutableState
 import androidx.compose.runtime.snapshots.StateFactoryMarker
 import androidx.compose.runtime.snapshots.StateObjectImpl
 import androidx.compose.runtime.snapshots.StateRecord
+import androidx.compose.runtime.snapshots.currentSnapshot
 import androidx.compose.runtime.snapshots.overwritable
 import androidx.compose.runtime.snapshots.readable
+import androidx.compose.runtime.snapshots.toSnapshotId
 import androidx.compose.runtime.snapshots.withCurrent
 import kotlin.reflect.KProperty
 
@@ -48,8 +51,7 @@ import kotlin.reflect.KProperty
  * @see mutableLongStateOf
  * @see mutableFloatStateOf
  */
-@StateFactoryMarker
-fun mutableDoubleStateOf(value: Double): MutableDoubleState =
+@StateFactoryMarker fun mutableDoubleStateOf(value: Double): MutableDoubleState =
   createSnapshotMutableDoubleState(value)
 
 /**
@@ -60,8 +62,7 @@ fun mutableDoubleStateOf(value: Double): MutableDoubleState =
  * @see mutableDoubleStateOf
  */
 @Stable
-@JvmDefaultWithCompatibility
-interface DoubleState : State<Double> {
+@JvmDefaultWithCompatibility interface DoubleState : State<Double> {
   @get:AutoboxingStateValueProperty("doubleValue")
   override val value: Double
     @Suppress("AutoBoxing") get() = doubleValue
@@ -85,8 +86,7 @@ inline operator fun DoubleState.getValue(thisObj: Any?, property: KProperty<*>):
  * @see [mutableDoubleStateOf]
  */
 @Stable
-@JvmDefaultWithCompatibility
-interface MutableDoubleState : DoubleState, MutableState<Double> {
+@JvmDefaultWithCompatibility interface MutableDoubleState : DoubleState, MutableState<Double> {
   @get:AutoboxingStateValueProperty("doubleValue")
   @set:AutoboxingStateValueProperty("doubleValue")
   override var value: Double
@@ -123,12 +123,12 @@ internal open class SnapshotMutableDoubleStateImpl(value: Double) :
   StateObjectImpl(), MutableDoubleState, SnapshotMutableState<Double> {
 
   private var next =
-    DoubleStateStateRecord(value).also {
-      if (Snapshot.isInSnapshot) {
-        it.next =
-          DoubleStateStateRecord(value).also { next ->
-            next.snapshotId = Snapshot.PreexistingSnapshotId
-          }
+    currentSnapshot().let { snapshot ->
+      DoubleStateStateRecord(snapshot.snapshotId, value).also {
+        if (snapshot !is GlobalSnapshot) {
+          it.next =
+            DoubleStateStateRecord(Snapshot.PreexistingSnapshotId.toSnapshotId(), value)
+        }
       }
     }
 
@@ -139,7 +139,7 @@ internal open class SnapshotMutableDoubleStateImpl(value: Double) :
     get() = next.readable(this).value
     set(value) =
       next.withCurrent {
-        if (!it.value.equalsWithNanFix(value)) {
+        if (it.value != value) {
           next.overwritable(this, it) { this.value = value }
         }
       }
@@ -164,7 +164,7 @@ internal open class SnapshotMutableDoubleStateImpl(value: Double) :
   ): StateRecord? {
     val currentRecord = current as DoubleStateStateRecord
     val appliedRecord = applied as DoubleStateStateRecord
-    return if (currentRecord.value.equalsWithNanFix(appliedRecord.value)) {
+    return if (currentRecord.value == appliedRecord.value) {
       current
     } else {
       null
@@ -174,11 +174,15 @@ internal open class SnapshotMutableDoubleStateImpl(value: Double) :
   override fun toString(): String =
     next.withCurrent { "MutableDoubleState(value=${it.value})@${hashCode()}" }
 
-  private class DoubleStateStateRecord(var value: Double) : StateRecord() {
+  private class DoubleStateStateRecord(snapshotId: SnapshotId, var value: Double) :
+    StateRecord(snapshotId) {
     override fun assign(value: StateRecord) {
       this.value = (value as DoubleStateStateRecord).value
     }
 
-    override fun create(): StateRecord = DoubleStateStateRecord(value)
+    override fun create(): StateRecord = create(snapshotId)
+
+    override fun create(snapshotId: SnapshotId): StateRecord =
+      DoubleStateStateRecord(snapshotId, value)
   }
 }

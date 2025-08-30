@@ -26,8 +26,7 @@ package androidx.compose.runtime
  * instead is intended to allow interoperability between components that use either representation
  * of a state of type `Int`.
  */
-@Stable
-fun State<Int>.asIntState(): IntState = if (this is IntState) this else UnboxedIntState(this)
+@Stable fun State<Int>.asIntState(): IntState = if (this is IntState) this else UnboxedIntState(this)
 
 internal class UnboxedIntState(private val baseState: State<Int>) : IntState {
   override val intValue: Int
@@ -49,8 +48,8 @@ internal class UnboxedIntState(private val baseState: State<Int>) : IntState {
  * but instead is intended to allow interoperability between components that use either
  * representation of a state of type `Long`.
  */
-@Stable
-fun State<Long>.asLongState(): LongState = if (this is LongState) this else UnboxedLongState(this)
+@Stable fun State<Long>.asLongState(): LongState =
+  if (this is LongState) this else UnboxedLongState(this)
 
 internal class UnboxedLongState(private val baseState: State<Long>) : LongState {
   override val longValue: Long
@@ -72,8 +71,7 @@ internal class UnboxedLongState(private val baseState: State<Long>) : LongState 
  * instead is intended to allow interoperability between components that use either representation
  * of a state of type `Float`.
  */
-@Stable
-fun State<Float>.asFloatState(): FloatState =
+@Stable fun State<Float>.asFloatState(): FloatState =
   if (this is FloatState) this else UnboxedFloatState(this)
 
 internal class UnboxedFloatState(private val baseState: State<Float>) : FloatState {
@@ -96,8 +94,7 @@ internal class UnboxedFloatState(private val baseState: State<Float>) : FloatSta
  * instead is intended to allow interoperability between components that use either representation
  * of a state of type `Double`.
  */
-@Stable
-fun State<Double>.asDoubleState(): DoubleState =
+@Stable fun State<Double>.asDoubleState(): DoubleState =
   if (this is DoubleState) this else UnboxedDoubleState(this)
 
 internal class UnboxedDoubleState(private val baseState: State<Double>) : DoubleState {

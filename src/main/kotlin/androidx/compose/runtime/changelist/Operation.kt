@@ -18,61 +18,72 @@ package androidx.compose.runtime.changelist
 
 import androidx.compose.runtime.Anchor
 import androidx.compose.runtime.Applier
-import androidx.compose.runtime.ComposeNodeLifecycleCallback
 import androidx.compose.runtime.Composition
 import androidx.compose.runtime.CompositionContext
 import androidx.compose.runtime.ControlledComposition
 import androidx.compose.runtime.InternalComposeApi
-import androidx.compose.runtime.InvalidationResult
 import androidx.compose.runtime.MovableContentState
 import androidx.compose.runtime.MovableContentStateReference
 import androidx.compose.runtime.OffsetApplier
 import androidx.compose.runtime.RecomposeScopeImpl
 import androidx.compose.runtime.RecomposeScopeOwner
 import androidx.compose.runtime.RememberManager
-import androidx.compose.runtime.RememberObserver
 import androidx.compose.runtime.RememberObserverHolder
 import androidx.compose.runtime.SlotTable
 import androidx.compose.runtime.SlotWriter
 import androidx.compose.runtime.TestOnly
 import androidx.compose.runtime.composeRuntimeError
 import androidx.compose.runtime.deactivateCurrentGroup
+import androidx.compose.runtime.extractMovableContentAtCurrent
 import androidx.compose.runtime.internal.IntRef
 import androidx.compose.runtime.internal.identityHashCode
-import androidx.compose.runtime.movableContentKey
 import androidx.compose.runtime.removeCurrentGroup
 import androidx.compose.runtime.runtimeCheck
 import androidx.compose.runtime.snapshots.fastForEachIndexed
-import androidx.compose.runtime.withAfterAnchorInfo
+import androidx.compose.runtime.tooling.ComposeStackTraceFrame
+import androidx.compose.runtime.tooling.ComposeToolingApi
+import androidx.compose.runtime.tooling.attachComposeStackTrace
+import androidx.compose.runtime.tooling.buildTrace
+
+internal typealias IntParameter = Int
 
 internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
-
   val name: String
     get() = this::class.simpleName.orEmpty()
 
-  abstract fun OperationArgContainer.execute(
+  fun OperationArgContainer.executeWithComposeStackTrace(
     applier: Applier<*>,
     slots: SlotWriter,
     rememberManager: RememberManager,
+    errorContext: OperationErrorContext?,
+  ) {
+    withCurrentStackTrace(errorContext, slots, getGroupAnchor(slots)) {
+      execute(applier, slots, rememberManager, errorContext)
+    }
+  }
+
+  protected open fun OperationArgContainer.getGroupAnchor(slots: SlotWriter): Anchor? = null
+
+  protected abstract fun OperationArgContainer.execute(
+    applier: Applier<*>,
+    slots: SlotWriter,
+    rememberManager: RememberManager,
+    errorContext: OperationErrorContext?,
   )
 
-  open fun intParamName(parameter: IntParameter): String = "IntParameter(${parameter.offset})"
+  open fun intParamName(parameter: IntParameter): String = "IntParameter(${parameter})"
 
   open fun objectParamName(parameter: ObjectParameter<*>): String =
     "ObjectParameter(${parameter.offset})"
 
   override fun toString() = name
 
-  @JvmInline
-  value class IntParameter(val offset: Int)
-
-  @JvmInline
-  value class ObjectParameter<T>(val offset: Int)
+  @JvmInline value class ObjectParameter<T>(val offset: Int)
 
   // region traversal operations
   object Ups : Operation(ints = 1) {
     inline val Count
-      get() = IntParameter(0)
+      get() = 0
 
     override fun intParamName(parameter: IntParameter) =
       when (parameter) {
@@ -84,6 +95,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       repeat(getInt(Count)) { applier.up() }
     }
@@ -103,6 +115,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       @Suppress("UNCHECKED_CAST") val nodeApplier = applier as Applier<Any?>
       val nodes = getObject(Nodes)
@@ -114,7 +127,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
 
   object AdvanceSlotsBy : Operation(ints = 1) {
     inline val Distance
-      get() = IntParameter(0)
+      get() = 0
 
     override fun intParamName(parameter: IntParameter) =
       when (parameter) {
@@ -126,6 +139,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.advanceBy(getInt(Distance))
     }
@@ -148,6 +162,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       rememberManager.sideEffect(getObject(Effect))
     }
@@ -155,7 +170,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
 
   object Remember : Operation(objects = 1) {
     inline val Value
-      get() = ObjectParameter<RememberObserver>(0)
+      get() = ObjectParameter<RememberObserverHolder>(0)
 
     override fun objectParamName(parameter: ObjectParameter<*>) =
       when (parameter) {
@@ -167,8 +182,72 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       rememberManager.remembering(getObject(Value))
+    }
+  }
+
+  object RememberPausingScope : Operation(objects = 1) {
+    inline val Scope
+      get() = ObjectParameter<RecomposeScopeImpl>(0)
+
+    override fun objectParamName(parameter: ObjectParameter<*>): String =
+      when (parameter) {
+        Scope -> "scope"
+        else -> super.objectParamName(parameter)
+      }
+
+    override fun OperationArgContainer.execute(
+      applier: Applier<*>,
+      slots: SlotWriter,
+      rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
+    ) {
+      val scope = getObject(Scope)
+      rememberManager.rememberPausingScope(scope)
+    }
+  }
+
+  object StartResumingScope : Operation(objects = 1) {
+    inline val Scope
+      get() = ObjectParameter<RecomposeScopeImpl>(0)
+
+    override fun objectParamName(parameter: ObjectParameter<*>): String =
+      when (parameter) {
+        Scope -> "scope"
+        else -> super.objectParamName(parameter)
+      }
+
+    override fun OperationArgContainer.execute(
+      applier: Applier<*>,
+      slots: SlotWriter,
+      rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
+    ) {
+      val scope = getObject(Scope)
+      rememberManager.startResumingScope(scope)
+    }
+  }
+
+  object EndResumingScope : Operation(objects = 1) {
+    inline val Scope
+      get() = ObjectParameter<RecomposeScopeImpl>(0)
+
+    override fun objectParamName(parameter: ObjectParameter<*>): String =
+      when (parameter) {
+        Scope -> "scope"
+        else -> super.objectParamName(parameter)
+      }
+
+    override fun OperationArgContainer.execute(
+      applier: Applier<*>,
+      slots: SlotWriter,
+      rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
+    ) {
+      val scope = getObject(Scope)
+      rememberManager.endResumingScope(scope)
     }
   }
 
@@ -190,11 +269,12 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val anchor = getObject(Anchor)
       val value = getObject(Value)
       if (value is RememberObserverHolder) {
-        rememberManager.remembering(value.wrapped)
+        rememberManager.remembering(value)
       }
       slots.appendSlot(anchor, value)
     }
@@ -202,7 +282,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
 
   object TrimParentValues : Operation(ints = 1) {
     inline val Count
-      get() = IntParameter(0)
+      get() = 0
 
     override fun intParamName(parameter: IntParameter): String =
       when (parameter) {
@@ -214,23 +294,13 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val count = getInt(Count)
-      val slotsSize = slots.slotsSize
       slots.forEachTailSlot(slots.parent, count) { slotIndex, value ->
         when (value) {
           is RememberObserverHolder -> {
-            // Values are always updated in the composition order (not slot table order)
-            // so there is no need to reorder these.
-            val endRelativeOrder = slotsSize - slotIndex
-            slots.withAfterAnchorInfo(value.after) { priority, endRelativeAfter ->
-              rememberManager.forgetting(
-                instance = value.wrapped,
-                endRelativeOrder = endRelativeOrder,
-                priority = priority,
-                endRelativeAfter = endRelativeAfter
-              )
-            }
+            rememberManager.forgetting(instance = value)
           }
           is RecomposeScopeImpl -> value.release()
         }
@@ -244,7 +314,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       get() = ObjectParameter<Any?>(0)
 
     inline val GroupSlotIndex
-      get() = IntParameter(0)
+      get() = 0
 
     override fun intParamName(parameter: IntParameter) =
       when (parameter) {
@@ -262,20 +332,16 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val value = getObject(Value)
       val groupSlotIndex = getInt(GroupSlotIndex)
       if (value is RememberObserverHolder) {
-        rememberManager.remembering(value.wrapped)
+        rememberManager.remembering(value)
       }
       when (val previous = slots.set(groupSlotIndex, value)) {
         is RememberObserverHolder -> {
-          val endRelativeOrder =
-            slots.slotsSize -
-              slots.slotIndexOfGroupSlotIndex(slots.currentGroup, groupSlotIndex)
-          // Values are always updated in the composition order (not slot table order)
-          // so there is no need to reorder these.
-          rememberManager.forgetting(previous.wrapped, endRelativeOrder, -1, -1)
+          rememberManager.forgetting(previous)
         }
         is RecomposeScopeImpl -> previous.release()
       }
@@ -290,7 +356,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       get() = ObjectParameter<Anchor>(1)
 
     inline val GroupSlotIndex
-      get() = IntParameter(0)
+      get() = 0
 
     override fun intParamName(parameter: IntParameter) =
       when (parameter) {
@@ -309,27 +375,18 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val value = getObject(Value)
       val anchor = getObject(Anchor)
       val groupSlotIndex = getInt(GroupSlotIndex)
       if (value is RememberObserverHolder) {
-        rememberManager.remembering(value.wrapped)
+        rememberManager.remembering(value)
       }
       val groupIndex = slots.anchorIndex(anchor)
       when (val previous = slots.set(groupIndex, groupSlotIndex, value)) {
         is RememberObserverHolder -> {
-          val endRelativeSlotOrder =
-            slots.slotsSize -
-              slots.slotIndexOfGroupSlotIndex(groupIndex, groupSlotIndex)
-          slots.withAfterAnchorInfo(previous.after) { priority, endRelativeAfter ->
-            rememberManager.forgetting(
-              previous.wrapped,
-              endRelativeSlotOrder,
-              priority,
-              endRelativeAfter
-            )
-          }
+          rememberManager.forgetting(previous)
         }
         is RecomposeScopeImpl -> previous.release()
       }
@@ -353,6 +410,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.updateAux(getObject(Data))
     }
@@ -363,6 +421,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.ensureStarted(0)
     }
@@ -382,6 +441,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.ensureStarted(getObject(Anchor))
     }
@@ -392,6 +452,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.removeCurrentGroup(rememberManager)
     }
@@ -399,7 +460,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
 
   object MoveCurrentGroup : Operation(ints = 1) {
     inline val Offset
-      get() = IntParameter(0)
+      get() = 0
 
     override fun intParamName(parameter: IntParameter) =
       when (parameter) {
@@ -411,6 +472,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.moveGroup(getInt(Offset))
     }
@@ -421,6 +483,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.endGroup()
     }
@@ -431,6 +494,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.skipToGroupEnd()
     }
@@ -454,6 +518,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val action = getObject(Action)
       val composition = getObject(Composition)
@@ -467,8 +532,9 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
-      (applier.current as ComposeNodeLifecycleCallback).onReuse()
+      applier.reuse()
     }
   }
 
@@ -490,19 +556,20 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val value = getObject(Value)
       val block = getObject(Block)
-      applier.current.block(value)
+      applier.apply(block, value)
     }
   }
 
   object RemoveNode : Operation(ints = 2) {
     inline val RemoveIndex
-      get() = IntParameter(0)
+      get() = 0
 
     inline val Count
-      get() = IntParameter(1)
+      get() = 1
 
     override fun intParamName(parameter: IntParameter) =
       when (parameter) {
@@ -515,6 +582,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       applier.remove(index = getInt(RemoveIndex), count = getInt(Count))
     }
@@ -522,13 +590,13 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
 
   object MoveNode : Operation(ints = 3) {
     inline val From
-      get() = IntParameter(0)
+      get() = 0
 
     inline val To
-      get() = IntParameter(1)
+      get() = 1
 
     inline val Count
-      get() = IntParameter(2)
+      get() = 2
 
     override fun intParamName(parameter: IntParameter) =
       when (parameter) {
@@ -542,6 +610,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       applier.move(from = getInt(From), to = getInt(To), count = getInt(Count))
     }
@@ -565,6 +634,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val insertTable = getObject(FromSlotTable)
       val anchor = getObject(Anchor)
@@ -573,7 +643,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       slots.moveFrom(
         table = insertTable,
         index = anchor.toIndexFor(insertTable),
-        removeSourceGroup = false
+        removeSourceGroup = false,
       )
       slots.endInsert()
     }
@@ -601,19 +671,25 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val insertTable = getObject(FromSlotTable)
       val anchor = getObject(Anchor)
       val fixups = getObject(Fixups)
 
       insertTable.write { writer ->
-        fixups.executeAndFlushAllPendingFixups(applier, writer, rememberManager)
+        fixups.executeAndFlushAllPendingFixups(
+          applier,
+          writer,
+          rememberManager,
+          errorContext?.withCurrentStackTrace(slots),
+        )
       }
       slots.beginInsert()
       slots.moveFrom(
         table = insertTable,
         index = anchor.toIndexFor(insertTable),
-        removeSourceGroup = false
+        removeSourceGroup = false,
       )
       slots.endInsert()
     }
@@ -624,7 +700,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       get() = ObjectParameter<() -> Any?>(0)
 
     inline val InsertIndex
-      get() = IntParameter(0)
+      get() = 0
 
     inline val GroupAnchor
       get() = ObjectParameter<Anchor>(1)
@@ -642,10 +718,14 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
         else -> super.objectParamName(parameter)
       }
 
+    override fun OperationArgContainer.getGroupAnchor(slots: SlotWriter): Anchor =
+      getObject(GroupAnchor)
+
     override fun OperationArgContainer.execute(
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val node = getObject(Factory).invoke()
       val groupAnchor = getObject(GroupAnchor)
@@ -660,7 +740,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
 
   object PostInsertNodeFixup : Operation(ints = 1, objects = 1) {
     inline val InsertIndex
-      get() = IntParameter(0)
+      get() = 0
 
     inline val GroupAnchor
       get() = ObjectParameter<Anchor>(0)
@@ -677,10 +757,14 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
         else -> super.objectParamName(parameter)
       }
 
+    override fun OperationArgContainer.getGroupAnchor(slots: SlotWriter): Anchor =
+      getObject(GroupAnchor)
+
     override fun OperationArgContainer.execute(
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val groupAnchor = getObject(GroupAnchor)
       val insertIndex = getInt(InsertIndex)
@@ -697,6 +781,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.deactivateCurrentGroup(rememberManager)
     }
@@ -710,6 +795,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       slots.reset()
     }
@@ -733,6 +819,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val effectiveNodeIndexOut = getObject(EffectiveNodeIndexOut)
 
@@ -740,7 +827,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
         positionToInsert(
           slots = slots,
           anchor = getObject(Anchor),
-          applier = @Suppress("UNCHECKED_CAST") (applier as Applier<Any?>)
+          applier = @Suppress("UNCHECKED_CAST") (applier as Applier<Any?>),
         )
     }
   }
@@ -765,6 +852,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val effectiveNodeIndex = getObject(EffectiveNodeIndex).element
       val nodesToInsert = getObject(Nodes)
@@ -804,6 +892,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val from = getObject(From)
       val to = getObject(To)
@@ -826,7 +915,7 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       RecomposeScopeImpl.adoptAnchoredScopes(
         slots = slots,
         anchors = anchors,
-        newOwner = to.composition as RecomposeScopeOwner
+        newOwner = to.composition as RecomposeScopeOwner,
       )
     }
   }
@@ -836,11 +925,12 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       positionToParentOf(
         slots = slots,
         applier = @Suppress("UNCHECKED_CAST") (applier as Applier<Any?>),
-        index = 0
+        index = 0,
       )
       slots.endGroup()
     }
@@ -869,13 +959,19 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
-      releaseMovableGroupAtCurrent(
-        composition = getObject(Composition),
-        parentContext = getObject(ParentCompositionContext),
-        reference = getObject(Reference),
-        slots = slots
-      )
+      val composition = getObject(Composition)
+      val reference = getObject(Reference)
+      val parentContext = getObject(ParentCompositionContext)
+      val state =
+        extractMovableContentAtCurrent(
+          composition = composition,
+          reference = reference,
+          slots = slots,
+          applier = null,
+        )
+      parentContext.movableContentStateReleased(reference, state, applier)
     }
   }
 
@@ -897,19 +993,21 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ) {
       val effectiveNodeIndex = getObject(EffectiveNodeIndex)?.element ?: 0
 
       getObject(Changes)
         .executeAndFlushAllPendingChanges(
           applier =
-          if (effectiveNodeIndex > 0) {
-            OffsetApplier(applier, effectiveNodeIndex)
-          } else {
-            applier
-          },
+            if (effectiveNodeIndex > 0) {
+              OffsetApplier(applier, effectiveNodeIndex)
+            } else {
+              applier
+            },
           slots = slots,
-          rememberManager = rememberManager
+          rememberManager = rememberManager,
+          errorContext = errorContext?.withCurrentStackTrace(slots),
         )
     }
   }
@@ -928,13 +1026,15 @@ internal sealed class Operation(val ints: Int = 0, val objects: Int = 0) {
     objects: Int = 0,
     val block: (Applier<*>, SlotWriter, RememberManager) -> Unit = { _, _, _ -> },
   ) : Operation(ints, objects) {
-    val intParams = List(ints) { index -> IntParameter(index) }
+    @Suppress("PrimitiveInCollection") val intParams = List(ints) { it }
+    @Suppress("PrimitiveInCollection")
     val objParams = List(objects) { index -> ObjectParameter<Any?>(index) }
 
     override fun OperationArgContainer.execute(
       applier: Applier<*>,
       slots: SlotWriter,
       rememberManager: RememberManager,
+      errorContext: OperationErrorContext?,
     ): Unit = block(applier, slots, rememberManager)
 
     override fun toString() =
@@ -995,98 +1095,57 @@ private fun positionToInsert(slots: SlotWriter, anchor: Anchor, applier: Applier
   return nodeIndex
 }
 
-/**
- * Release the movable group stored in [slots] to the recomposer to be used to insert in another
- * location if needed.
- */
-@OptIn(InternalComposeApi::class)
-private fun releaseMovableGroupAtCurrent(
-  composition: ControlledComposition,
-  parentContext: CompositionContext,
-  reference: MovableContentStateReference,
-  slots: SlotWriter,
+private inline fun withCurrentStackTrace(
+  errorContext: OperationErrorContext?,
+  writer: SlotWriter,
+  location: Anchor?,
+  block: () -> Unit,
 ) {
-  val slotTable = SlotTable()
-  if (slots.collectingSourceInformation) {
-    slotTable.collectSourceInformation()
+  try {
+    block()
+  } catch (e: Throwable) {
+    throw e.attachComposeStackTrace(errorContext, writer, location)
   }
-  if (slots.collectingCalledInformation) {
-    slotTable.collectCalledByInformation()
-  }
+}
 
-  // Write a table that as if it was written by a calling
-  // invokeMovableContentLambda because this might be removed from the
-  // composition before the new composition can be composed to receive it. When
-  // the new composition receives the state it must recompose over the state by
-  // calling invokeMovableContentLambda.
-  val anchors =
-    slotTable.write { writer ->
-      writer.beginInsert()
-
-      // This is the prefix created by invokeMovableContentLambda
-      writer.startGroup(movableContentKey, reference.content)
-      writer.markGroup()
-      writer.update(reference.parameter)
-
-      // Move the content into current location
-      val anchors = slots.moveTo(reference.anchor, 1, writer)
-
-      // skip the group that was just inserted.
-      writer.skipGroup()
-
-      // End the group that represents the call to invokeMovableContentLambda
-      writer.endGroup()
-
-      writer.endInsert()
-
-      anchors
+@OptIn(ComposeToolingApi::class)
+@Suppress("ListIterator")
+private fun Throwable.attachComposeStackTrace(
+  errorContext: OperationErrorContext?,
+  writer: SlotWriter,
+  anchor: Anchor?,
+): Throwable {
+  if (errorContext == null) return this
+  return attachComposeStackTrace {
+    if (anchor != null) {
+      writer.seek(anchor)
     }
-
-  val state = MovableContentState(slotTable)
-  if (RecomposeScopeImpl.hasAnchoredRecomposeScopes(slotTable, anchors)) {
-    // If any recompose scopes are invalidated while the movable content is outside
-    // a composition, ensure the reference is updated to contain the invalidation.
-    val movableContentRecomposeScopeOwner =
-      object : RecomposeScopeOwner {
-        override fun invalidate(
-          scope: RecomposeScopeImpl,
-          instance: Any?,
-        ): InvalidationResult {
-          // Try sending this to the original owner first.
-          val result =
-            (composition as? RecomposeScopeOwner)?.invalidate(scope, instance)
-              ?: InvalidationResult.IGNORED
-
-          // If the original owner ignores this then we need to record it in the
-          // reference
-          if (result == InvalidationResult.IGNORED) {
-            reference.invalidations += scope to instance
-            return InvalidationResult.SCHEDULED
-          }
-          return result
-        }
-
-        // The only reason [recomposeScopeReleased] is called is when the recompose scope is
-        // removed from the table. First, this never happens for content that is moving, and
-        // 2) even if it did the only reason we tell the composer is to clear tracking
-        // tables that contain this information which is not relevant here.
-        override fun recomposeScopeReleased(scope: RecomposeScopeImpl) {
-          // Nothing to do
-        }
-
-        // [recordReadOf] this is also something that would happen only during active
-        // recomposition which doesn't happened to a slot table that is moving.
-        override fun recordReadOf(value: Any) {
-          // Nothing to do
+    val trace = writer.buildTrace()
+    val offset = trace.lastOrNull()?.groupOffset
+    val parentTrace =
+      errorContext.buildStackTrace(offset).let {
+        if (offset == null || it.isEmpty()) {
+          it
+        } else {
+          val head = it.first()
+          val tail = it.drop(1)
+          listOf(head.copy(groupOffset = offset)) + tail
         }
       }
-    slotTable.write { writer ->
-      RecomposeScopeImpl.adoptAnchoredScopes(
-        slots = writer,
-        anchors = anchors,
-        newOwner = movableContentRecomposeScopeOwner
-      )
+    trace + parentTrace
+  }
+}
+
+private fun OperationErrorContext.withCurrentStackTrace(slots: SlotWriter): OperationErrorContext {
+  val parent = this
+  return object : OperationErrorContext {
+    override fun buildStackTrace(currentOffset: Int?): List<ComposeStackTraceFrame> {
+      val parentTrace = parent.buildStackTrace(null)
+      // Slots are positioned at the start of the next group when insertion happens
+      val currentGroup = slots.parent
+      if (currentGroup < 0) return parentTrace
+      return slots.buildTrace(currentOffset, currentGroup, slots.parent(currentGroup)) +
+        parentTrace
     }
   }
-  parentContext.movableContentStateReleased(reference, state)
 }

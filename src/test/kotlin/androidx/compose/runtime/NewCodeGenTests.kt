@@ -198,7 +198,6 @@ class NewCodeGenTests {
   }
 }
 
-@Stable
-class StableCounter(var count: Int = 0)
+@Stable class StableCounter(var count: Int = 0)
 
 data class Phone(val area: String, val prefix: String, val number: String)

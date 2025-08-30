@@ -25,8 +25,7 @@ import kotlin.coroutines.coroutineContext
  * This may be used for matching timing with the refresh rate of a display or otherwise
  * synchronizing work with a desired frame rate.
  */
-@JvmDefaultWithCompatibility
-interface MonotonicFrameClock : CoroutineContext.Element {
+@JvmDefaultWithCompatibility interface MonotonicFrameClock : CoroutineContext.Element {
   /**
    * Suspends until a new frame is requested, immediately invokes [onFrame] with the frame time in
    * nanoseconds in the calling context of frame dispatch, then resumes with the result from
@@ -108,8 +107,7 @@ suspend fun <R> withFrameMillis(onFrame: (frameTimeMillis: Long) -> R): R =
  * Returns the [MonotonicFrameClock] for this [CoroutineContext] or throws [IllegalStateException]
  * if one is not present.
  */
-@ExperimentalComposeApi
-val CoroutineContext.monotonicFrameClock: MonotonicFrameClock
+@ExperimentalComposeApi val CoroutineContext.monotonicFrameClock: MonotonicFrameClock
   get() =
     this[MonotonicFrameClock]
       ?: error(

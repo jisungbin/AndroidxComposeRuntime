@@ -15,6 +15,7 @@
  */
 
 @file:OptIn(InternalComposeApi::class)
+@file:Suppress("EXPECT_ACTUAL_INCOMPATIBILITY") // b/418285824
 
 package androidx.compose.runtime.internal
 
@@ -48,7 +49,7 @@ internal fun differentBits(slot: Int): Int = bitsForSlot(0b10, slot)
  * This allows much of the call-graph to be skipped when a composable function is passed through
  * multiple levels of composable functions.
  */
-@Suppress("NAME_SHADOWING", "UNCHECKED_CAST")
+@Suppress("NAME_SHADOWING", "UNCHECKED_CAST", "PARAMETER_NAME_CHANGED_ON_OVERRIDE")
 @Stable
 internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, block: Any?) :
   ComposableLambda {
@@ -156,7 +157,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p2,
         p3,
         c,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(p1, p2, p3, nc, updateChangedFlags(changed) or 0b1)
@@ -182,7 +183,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p3,
         p4,
         c,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(p1, p2, p3, p4, nc, updateChangedFlags(changed) or 0b1)
@@ -449,7 +450,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p11,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -511,7 +512,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p12,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -574,7 +575,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p13,
         c,
         changed,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(
@@ -593,7 +594,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p13,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -659,7 +660,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p14,
         c,
         changed,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(
@@ -679,7 +680,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p14,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -748,7 +749,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p15,
         c,
         changed,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(
@@ -769,7 +770,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p15,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -841,7 +842,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p16,
         c,
         changed,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(
@@ -863,7 +864,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p16,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -938,7 +939,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p17,
         c,
         changed,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(
@@ -961,7 +962,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p17,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -1039,7 +1040,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p18,
         c,
         changed,
-        dirty
+        dirty,
       )
     c.endRestartGroup()?.updateScope { nc, _ ->
       this(
@@ -1063,7 +1064,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         p18,
         nc,
         updateChangedFlags(changed) or 0b1,
-        updateChangedFlags(changed1)
+        updateChangedFlags(changed1),
       )
     }
     return result
@@ -1103,7 +1104,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function14<
     Any?,
@@ -1120,7 +1121,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function15<
     Any?,
@@ -1138,7 +1139,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function16<
     Any?,
@@ -1157,7 +1158,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function17<
     Any?,
@@ -1177,7 +1178,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function18<
     Any?,
@@ -1198,7 +1199,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function19<
     Any?,
@@ -1220,7 +1221,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function20<
     Any?,
@@ -1243,7 +1244,7 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >,
   Function21<
     Any?,
@@ -1267,12 +1268,16 @@ interface ComposableLambda :
     Composer,
     Int,
     Int,
-    Any?
+    Any?,
     >
 
 @Suppress("unused")
-@ComposeCompilerApi
-fun composableLambda(composer: Composer, key: Int, tracked: Boolean, block: Any): ComposableLambda {
+@ComposeCompilerApi fun composableLambda(
+  composer: Composer,
+  key: Int,
+  tracked: Boolean,
+  block: Any,
+): ComposableLambda {
   // Use a rolled version of the key to avoid the key being a duplicate of the function's
   // key. This is particularly important for live edit scenarios where the groups will be
   // invalidated by the key number. This ensures that invalidating the function will not
@@ -1296,12 +1301,10 @@ fun composableLambda(composer: Composer, key: Int, tracked: Boolean, block: Any)
 private val lambdaKey = Any()
 
 @Suppress("unused")
-@ComposeCompilerApi
-fun composableLambdaInstance(key: Int, tracked: Boolean, block: Any): ComposableLambda =
+@ComposeCompilerApi fun composableLambdaInstance(key: Int, tracked: Boolean, block: Any): ComposableLambda =
   ComposableLambdaImpl(key, tracked, block)
 
 @Suppress("unused")
 @Composable
-@ComposeCompilerApi
-fun rememberComposableLambda(key: Int, tracked: Boolean, block: Any): ComposableLambda =
+@ComposeCompilerApi fun rememberComposableLambda(key: Int, tracked: Boolean, block: Any): ComposableLambda =
   remember { ComposableLambdaImpl(key, tracked, block) }.also { it.update(block) }

@@ -7,7 +7,6 @@ package androidx.compose.runtime.external.kotlinx.collections.immutable.implemen
 
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.DeltaCounter
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.MutabilityOwnership
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.forEachOneBit
 
 

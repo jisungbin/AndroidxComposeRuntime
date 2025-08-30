@@ -71,7 +71,7 @@ internal class PersistentCompositionLocalHashMap(
     val Empty =
       PersistentCompositionLocalHashMap(
         node = TrieNode.EMPTY as TrieNode<CompositionLocal<Any?>, ValueHolder<Any?>>,
-        size = 0
+        size = 0,
       )
   }
 }

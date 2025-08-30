@@ -22,13 +22,11 @@ internal class PersistentVectorMutableIterator<T>(
    * Used to check if the [PersistentVectorBuilder] was modified outside this iterator.
    */
   private var expectedModCount = builder.getModCount()
-
   /**
    * Iterates over leaves of the builder.root trie.
    * This property is equal to null if builder.root is null.
    */
   private var trieIterator: TrieIterator<T>? = null
-
   /**
    * Index of the element this iterator returned from last invocation of next() or previous().
    * Used to remove or set new value at this index.

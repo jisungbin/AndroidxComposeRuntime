@@ -27,14 +27,14 @@ package androidx.compose.runtime
  * The [Immutable] annotation is provided to mark immutable types as stable.
  *
  * An object whose public properties do not change but is not immutable (for example, it has private
- * mutable state or uses property delegation to a [MutableState] object, but is otherwise
- * immutable), should use the [Stable] annotation.
+ * mutable state or uses property delegation to a [androidx.compose.runtime.MutableState] object,
+ * but is otherwise immutable), should use the [Stable] annotation.
  *
  * Mutable object that do not notify composition when they changed should not be marked as stable.
  *
- * When all types passed as parameters to a [Composable] function are marked as stable then the
- * parameter values are compared for equality based on positional memoization and the call is
- * skipped if all the values are the equal to the previous call.
+ * When all types passed as parameters to a [androidx.compose.runtime.Composable] function are
+ * marked as stable then the parameter values are compared for equality based on positional
+ * memoization and the call is skipped if all the values are the equal to the previous call.
  *
  * Primitive value types (such as Int, Float, etc), String and enum types are considered, a priori,
  * stable.

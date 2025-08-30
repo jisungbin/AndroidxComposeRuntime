@@ -5,8 +5,6 @@
 
 package androidx.compose.runtime.external.kotlinx.collections.immutable.implementations.immutableMap
 
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
-
 
 internal class TrieNodeMutableEntriesIterator<K, V>(
   private val parentIterator: PersistentHashMapBuilderEntriesIterator<K, V>,

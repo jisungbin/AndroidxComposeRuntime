@@ -9,7 +9,6 @@ import androidx.compose.runtime.external.kotlinx.collections.immutable.Immutable
 import androidx.compose.runtime.external.kotlinx.collections.immutable.PersistentList
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.ListImplementation.checkElementIndex
 import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.ListImplementation.checkPositionIndex
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
 import androidx.compose.runtime.external.kotlinx.collections.immutable.mutate
 
 internal class SmallPersistentVector<E>(private val buffer: Array<Any?>) : ImmutableList<E>, AbstractPersistentList<E>() {

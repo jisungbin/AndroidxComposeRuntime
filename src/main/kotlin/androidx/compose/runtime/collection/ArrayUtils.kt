@@ -14,10 +14,21 @@
  * limitations under the License.
  */
 
-package androidx.compose.runtime
+package androidx.compose.runtime.collection
 
-internal class SynchronizedObject
-
-@PublishedApi
-internal inline fun <R> synchronized(lock: SynchronizedObject, block: () -> R): R =
-  kotlin.synchronized(lock, block)
+/**
+ * Equivalent of Array.copyInto() with an implementation designed to avoid unnecessary null checks
+ * and exception throws on Android after inlining.
+ */
+internal fun <T> Array<out T>.fastCopyInto(
+  destination: Array<T>,
+  destinationOffset: Int,
+  startIndex: Int,
+  endIndex: Int,
+): Array<T> =
+  this.copyInto(
+    destination = destination,
+    destinationOffset = destinationOffset,
+    startIndex = startIndex,
+    endIndex = endIndex,
+  )

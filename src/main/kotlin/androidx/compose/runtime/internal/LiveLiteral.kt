@@ -48,8 +48,7 @@ annotation class LiveLiteralFileInfo(val file: String)
 private val liveLiteralCache = HashMap<String, MutableState<Any?>>()
 
 @InternalComposeApi
-@ComposeCompilerApi
-var isLiveLiteralsEnabled: Boolean = false
+@ComposeCompilerApi var isLiveLiteralsEnabled: Boolean = false
   private set
 
 /**
@@ -57,8 +56,7 @@ var isLiveLiteralsEnabled: Boolean = false
  *
  * Caution: This API is intended to be used by tooling only. Use at your own risk.
  */
-@InternalComposeApi
-fun enableLiveLiterals() {
+@InternalComposeApi fun enableLiveLiterals() {
   isLiveLiteralsEnabled = true
 }
 
@@ -70,15 +68,13 @@ fun enableLiveLiterals() {
  * Caution: This API is intended to be used by tooling only. Use at your own risk.
  */
 @InternalComposeApi
-@ComposeCompilerApi
-fun <T> liveLiteral(key: String, value: T): State<T> {
+@ComposeCompilerApi fun <T> liveLiteral(key: String, value: T): State<T> {
   @Suppress("UNCHECKED_CAST")
   return liveLiteralCache.getOrPut(key) { mutableStateOf<Any?>(value) } as State<T>
 }
 
 /** Updates the value of a [State] object that was created by [liveLiteral] with the same key. */
-@InternalComposeApi
-fun updateLiveLiteralValue(key: String, value: Any?) {
+@InternalComposeApi fun updateLiveLiteralValue(key: String, value: Any?) {
   var needToUpdate = true
   val stateObj =
     liveLiteralCache.getOrPut(key) {

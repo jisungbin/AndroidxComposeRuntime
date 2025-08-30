@@ -26,8 +26,7 @@ import androidx.compose.runtime.ExperimentalComposeApi
  * @throws IllegalStateException
  */
 @Suppress("unused")
-@ComposeCompilerApi
-fun illegalDecoyCallException(fName: String): Nothing =
+@ComposeCompilerApi fun illegalDecoyCallException(fName: String): Nothing =
   throw IllegalStateException("Function $fName should have been replaced by compiler.")
 
 /**

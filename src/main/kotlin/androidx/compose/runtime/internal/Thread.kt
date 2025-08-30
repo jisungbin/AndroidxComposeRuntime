@@ -16,8 +16,8 @@
 
 package androidx.compose.runtime.internal
 
-internal val MainThreadId: Long = -1
+internal const val MainThreadId: Long = -1
 
-internal fun currentThreadId(): Long = Thread.currentThread().id
+internal fun currentThreadId(): Long = Thread.currentThread().threadId()
 
 internal fun currentThreadName(): String = Thread.currentThread().name

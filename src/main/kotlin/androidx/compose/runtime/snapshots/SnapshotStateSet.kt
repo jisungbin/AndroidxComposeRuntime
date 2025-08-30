@@ -17,18 +17,20 @@
 package androidx.compose.runtime.snapshots
 
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.SynchronizedObject
 import androidx.compose.runtime.external.kotlinx.collections.immutable.PersistentSet
 import androidx.compose.runtime.external.kotlinx.collections.immutable.persistentSetOf
+import androidx.compose.runtime.platform.makeSynchronizedObject
+import androidx.compose.runtime.platform.synchronized
 
 /**
  * An implementation of [MutableSet] that can be observed and snapshot. This is the result type
  * created by [androidx.compose.runtime.mutableStateSetOf].
  *
+ * The returned set iteration order is in the order the items were inserted into the set.
+ *
  * @see androidx.compose.runtime.mutableStateSetOf
  */
-@Stable
-class SnapshotStateSet<T> : StateObject, MutableSet<T>, RandomAccess {
+@Stable class SnapshotStateSet<T> : StateObject, MutableSet<T>, RandomAccess {
   override var firstStateRecord: StateRecord = stateRecordWith(persistentSetOf())
     private set
 
@@ -55,39 +57,18 @@ class SnapshotStateSet<T> : StateObject, MutableSet<T>, RandomAccess {
    */
   fun toSet(): Set<T> = readable.set
 
-  internal val modification: Int
-    get() = withCurrent { modification }
-
-  @Suppress("UNCHECKED_CAST")
-  internal val readable: StateSetStateRecord<T>
-    get() = (firstStateRecord as StateSetStateRecord<T>).readable(this)
-
-  /** This is an internal implementation class of [SnapshotStateSet]. Do not use. */
-  internal class StateSetStateRecord<T> internal constructor(internal var set: PersistentSet<T>) :
-    StateRecord() {
-    internal var modification = 0
-
-    override fun assign(value: StateRecord) {
-      synchronized(sync) {
-        @Suppress("UNCHECKED_CAST")
-        set = (value as StateSetStateRecord<T>).set
-        modification = value.modification
-      }
-    }
-
-    override fun create(): StateRecord = StateSetStateRecord(set)
-  }
-
   override val size: Int
     get() = readable.set.size
 
-  override fun contains(element: T) = readable.set.contains(element)
+  override fun contains(element: T): Boolean = readable.set.contains(element)
 
-  override fun containsAll(elements: Collection<T>) = readable.set.containsAll(elements)
+  override fun containsAll(elements: Collection<T>): Boolean =
+    readable.set.containsAll(elements)
 
-  override fun isEmpty() = readable.set.isEmpty()
+  override fun isEmpty(): Boolean = readable.set.isEmpty()
 
-  override fun iterator(): MutableIterator<T> = StateSetIterator(this, readable.set.iterator())
+  override fun iterator(): MutableIterator<T> =
+    StateSetIterator(this, readable.set.iterator())
 
   @Suppress("UNCHECKED_CAST")
   override fun toString(): String =
@@ -95,24 +76,21 @@ class SnapshotStateSet<T> : StateObject, MutableSet<T>, RandomAccess {
       "SnapshotStateSet(value=${it.set})@${hashCode()}"
     }
 
-  override fun add(element: T) = conditionalUpdate { it.add(element) }
+  override fun add(element: T): Boolean = conditionalUpdate { it.add(element) }
 
-  override fun addAll(elements: Collection<T>) = conditionalUpdate { it.addAll(elements) }
-
-  override fun clear() {
-    writable {
-      synchronized(sync) {
-        set = persistentSetOf()
-        modification++
-      }
-    }
+  override fun addAll(elements: Collection<T>): Boolean = conditionalUpdate {
+    it.addAll(elements)
   }
 
-  override fun remove(element: T) = conditionalUpdate { it.remove(element) }
+  override fun clear(): Unit = clearImpl()
 
-  override fun removeAll(elements: Collection<T>) = conditionalUpdate { it.removeAll(elements) }
+  override fun remove(element: T): Boolean = conditionalUpdate { it.remove(element) }
 
-  override fun retainAll(elements: Collection<T>) = mutateBoolean {
+  override fun removeAll(elements: Collection<T>): Boolean = conditionalUpdate {
+    it.removeAll(elements)
+  }
+
+  override fun retainAll(elements: Collection<T>): Boolean = mutateBoolean {
     it.retainAll(elements.toSet())
   }
 
@@ -123,87 +101,114 @@ class SnapshotStateSet<T> : StateObject, MutableSet<T>, RandomAccess {
   @Suppress("unused")
   internal val debuggerDisplayValue: Set<T>
     @JvmName("getDebuggerDisplayValue") get() = withCurrent { set }
+}
 
-  private inline fun <R> writable(block: StateSetStateRecord<T>.() -> R): R =
-    @Suppress("UNCHECKED_CAST")
-    (firstStateRecord as StateSetStateRecord<T>).writable(this, block)
+/** This is an internal implementation class of [SnapshotStateSet]. Do not use. */
+internal class StateSetStateRecord<T>
+internal constructor(snapshotId: SnapshotId, internal var set: PersistentSet<T>) :
+  StateRecord(snapshotId) {
+  internal var modification = 0
 
-  private inline fun <R> withCurrent(block: StateSetStateRecord<T>.() -> R): R =
-    @Suppress("UNCHECKED_CAST") (firstStateRecord as StateSetStateRecord<T>).withCurrent(block)
-
-  private fun mutateBoolean(block: (MutableSet<T>) -> Boolean): Boolean = mutate(block)
-
-  private inline fun <R> mutate(block: (MutableSet<T>) -> R): R {
-    var result: R
-    while (true) {
-      var oldSet: PersistentSet<T>? = null
-      var currentModification = 0
-      synchronized(sync) {
-        val current = withCurrent { this }
-        currentModification = current.modification
-        oldSet = current.set
-      }
-      val builder = oldSet?.builder() ?: error("No set to mutate")
-      result = block(builder)
-      val newSet = builder.build()
-      if (
-        newSet == oldSet ||
-        writable {
-          synchronized(sync) {
-            if (modification == currentModification) {
-              set = newSet
-              modification++
-              true
-            } else false
-          }
-        }
-      )
-        break
+  override fun assign(value: StateRecord) {
+    synchronized(sync) {
+      @Suppress("UNCHECKED_CAST")
+      set = (value as StateSetStateRecord<T>).set
+      modification = value.modification
     }
-    return result
   }
 
-  private inline fun conditionalUpdate(block: (PersistentSet<T>) -> PersistentSet<T>) = run {
-    val result: Boolean
-    while (true) {
-      var oldSet: PersistentSet<T>? = null
-      var currentModification = 0
-      synchronized(sync) {
-        val current = withCurrent { this }
-        currentModification = current.modification
-        oldSet = current.set
-      }
-      val newSet = block(oldSet!!)
-      if (newSet == oldSet) {
-        result = false
-        break
-      }
-      if (
-        writable {
-          synchronized(sync) {
-            if (modification == currentModification) {
-              set = newSet
-              modification++
-              true
-            } else false
-          }
-        }
-      ) {
-        result = true
-        break
-      }
+  override fun create(): StateRecord = StateSetStateRecord(currentSnapshot().snapshotId, set)
+
+  override fun create(snapshotId: SnapshotId): StateRecord = StateSetStateRecord(snapshotId, set)
+}
+
+internal val <T> SnapshotStateSet<T>.modification: Int
+  get() = withCurrent { modification }
+
+@Suppress("UNCHECKED_CAST")
+internal val <T> SnapshotStateSet<T>.readable: StateSetStateRecord<T>
+  get() = (firstStateRecord as StateSetStateRecord<T>).readable(this)
+
+internal inline fun <R, T> SnapshotStateSet<T>.writable(block: StateSetStateRecord<T>.() -> R): R =
+  @Suppress("UNCHECKED_CAST") (firstStateRecord as StateSetStateRecord<T>).writable(this, block)
+
+internal inline fun <R, T> SnapshotStateSet<T>.withCurrent(
+  block: StateSetStateRecord<T>.() -> R,
+): R = @Suppress("UNCHECKED_CAST") (firstStateRecord as StateSetStateRecord<T>).withCurrent(block)
+
+internal fun <T> SnapshotStateSet<T>.mutateBoolean(block: (MutableSet<T>) -> Boolean): Boolean =
+  mutate(block)
+
+internal inline fun <R, T> SnapshotStateSet<T>.mutate(block: (MutableSet<T>) -> R): R {
+  var result: R
+  while (true) {
+    var oldSet: PersistentSet<T>? = null
+    var currentModification = 0
+    synchronized(sync) {
+      val current = withCurrent { this }
+      currentModification = current.modification
+      oldSet = current.set
     }
-    result
+    val builder = oldSet?.builder() ?: error("No set to mutate")
+    result = block(builder)
+    val newSet = builder.build()
+    if (newSet == oldSet || writable { attemptUpdate(currentModification, newSet) }) break
+  }
+  return result
+}
+
+internal inline fun <T> SnapshotStateSet<T>.conditionalUpdate(
+  block: (PersistentSet<T>) -> PersistentSet<T>,
+) = run {
+  val result: Boolean
+  while (true) {
+    var oldSet: PersistentSet<T>? = null
+    var currentModification = 0
+    synchronized(sync) {
+      val current = withCurrent { this }
+      currentModification = current.modification
+      oldSet = current.set
+    }
+    val newSet = block(oldSet!!)
+    if (newSet == oldSet) {
+      result = false
+      break
+    }
+    if (writable { attemptUpdate(currentModification, newSet) }) {
+      result = true
+      break
+    }
+  }
+  result
+}
+
+@Suppress("NOTHING_TO_INLINE")
+internal inline fun <T> SnapshotStateSet<T>.clearImpl() {
+  writable {
+    synchronized(sync) {
+      set = persistentSetOf()
+      modification++
+    }
+  }
+}
+
+// NOTE: do not inline this method to avoid class verification failures, see b/369909868
+internal fun <T> StateSetStateRecord<T>.attemptUpdate(
+  currentModification: Int,
+  newSet: PersistentSet<T>,
+): Boolean =
+  synchronized(sync) {
+    if (modification == currentModification) {
+      set = newSet
+      modification++
+      true
+    } else false
   }
 
-  private fun stateRecordWith(set: PersistentSet<T>): StateRecord {
-    return StateSetStateRecord(set).also {
-      if (Snapshot.isInSnapshot) {
-        it.next =
-          StateSetStateRecord(set).also { next ->
-            next.snapshotId = Snapshot.PreexistingSnapshotId
-          }
-      }
+internal fun <T> SnapshotStateSet<T>.stateRecordWith(set: PersistentSet<T>): StateRecord {
+  return StateSetStateRecord(currentSnapshot().snapshotId, set).also {
+    if (Snapshot.isInSnapshot) {
+      it.next = StateSetStateRecord(Snapshot.PreexistingSnapshotId.toSnapshotId(), set)
     }
   }
 }
@@ -217,12 +222,13 @@ class SnapshotStateSet<T> : StateObject, MutableSet<T>, RandomAccess {
  * between sets. As there is already contention on the global snapshot lock to write so the
  * additional contention introduced by this lock is nominal.
  *
- * In code that requires this lock and calls `writable` (or other operation that acquires the
- * snapshot global lock), this lock *MUST* be acquired first to avoid deadlocks.
+ * In code the requires this lock and calls `writable` (or other operation that acquires the
+ * snapshot global lock), this lock *MUST* be acquired last to avoid deadlocks. In other words, the
+ * lock must be taken in the `writable` lambda, if `writable` is used.
  */
-private val sync = SynchronizedObject()
+private val sync = makeSynchronizedObject()
 
-private class StateSetIterator<T>(val set: SnapshotStateSet<T>, val iterator: Iterator<T>) :
+internal class StateSetIterator<T>(val set: SnapshotStateSet<T>, val iterator: Iterator<T>) :
   MutableIterator<T> {
   var current: T? = null
   var next: T? = null

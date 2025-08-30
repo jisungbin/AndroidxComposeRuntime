@@ -21,7 +21,6 @@ import androidx.collection.MutableScatterMap
 import androidx.collection.MutableScatterSet
 import androidx.compose.runtime.DerivedState
 import androidx.compose.runtime.DerivedStateObserver
-import androidx.compose.runtime.SynchronizedObject
 import androidx.compose.runtime.TestOnly
 import androidx.compose.runtime.collection.ScopeMap
 import androidx.compose.runtime.collection.fastForEach
@@ -31,9 +30,10 @@ import androidx.compose.runtime.internal.AtomicReference
 import androidx.compose.runtime.internal.currentThreadId
 import androidx.compose.runtime.internal.currentThreadName
 import androidx.compose.runtime.observeDerivedStateRecalculations
+import androidx.compose.runtime.platform.makeSynchronizedObject
+import androidx.compose.runtime.platform.synchronized
 import androidx.compose.runtime.requirePrecondition
 import androidx.compose.runtime.structuralEqualityPolicy
-import androidx.compose.runtime.synchronized
 
 /**
  * Helper class to efficiently observe snapshot state reads. See [observeReads] for more details.
@@ -172,7 +172,7 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
    * The list only grows.
    */
   private val observedScopeMaps = mutableVectorOf<ObservedScopeMap>()
-  private val observedScopeMapsLock = SynchronizedObject()
+  private val observedScopeMapsLock = makeSynchronizedObject()
 
   /**
    * Helper for synchronized iteration over [observedScopeMaps]. All observed reads should happen
@@ -218,7 +218,11 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
    *   the callback, as [observedScopeMaps] grows with each new callback instance.
    * @param block to observe reads within.
    */
-  fun <T : Any> observeReads(scope: T, onValueChangedForScope: (T) -> Unit, block: () -> Unit) {
+  fun <T : Any> observeReads(
+    scope: T,
+    onValueChangedForScope: (T) -> Unit,
+    block: () -> Unit,
+  ) {
     val scopeMap = synchronized(observedScopeMapsLock) { ensureMap(onValueChangedForScope) }
 
     val oldPaused = isPaused
@@ -257,10 +261,9 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
     "Replace with Snapshot.withoutReadObservation()",
     ReplaceWith(
       "Snapshot.withoutReadObservation(block)",
-      "androidx.compose.runtime.snapshots.Snapshot"
-    )
-  )
-  fun withNoObservations(block: () -> Unit) {
+      "androidx.compose.runtime.snapshots.Snapshot",
+    ),
+  ) fun withNoObservations(block: () -> Unit) {
     val oldPaused = isPaused
     isPaused = true
     try {
@@ -306,8 +309,7 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
    * This method is only used for testing. It notifies that [changes] have been made on
    * [snapshot].
    */
-  @TestOnly
-  fun notifyChanges(changes: Set<Any>, snapshot: Snapshot) {
+  @TestOnly fun notifyChanges(changes: Set<Any>, snapshot: Snapshot) {
     applyObserver(changes, snapshot)
   }
 
@@ -398,11 +400,11 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
         currentToken = currentToken,
         currentScope = scope,
         recordedValues =
-        currentScopeReads
-          ?: MutableObjectIntMap<Any>().also {
-            currentScopeReads = it
-            scopeToValues[scope] = it
-          }
+          currentScopeReads
+            ?: MutableObjectIntMap<Any>().also {
+              currentScopeReads = it
+              scopeToValues[scope] = it
+            },
       )
     }
 
@@ -445,7 +447,13 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
     }
 
     /** Setup new scope for state read observation, observe them, and cleanup afterwards */
-    fun observe(scope: Any, readObserver: (Any) -> Unit, block: () -> Unit) {
+    // inlined as used only in one place to not add extra function call overhead
+    @Suppress("NOTHING_TO_INLINE")
+    inline fun observe(
+      scope: Any,
+      noinline readObserver: (Any) -> Unit,
+      noinline block: () -> Unit,
+    ) {
       val previousScope = currentScope
       val previousReads = currentScopeReads
       val previousToken = currentToken
@@ -453,11 +461,11 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
       currentScope = scope
       currentScopeReads = scopeToValues[scope]
       if (currentToken == -1) {
-        currentToken = currentSnapshot().id
+        currentToken = currentSnapshot().snapshotId.hashCode()
       }
 
       observeDerivedStateRecalculations(derivedStateObserver) {
-        Snapshot.observe(readObserver, null, block)
+        Snapshot.observeInternal(readObserver, null, block)
       }
 
       clearObsoleteStateReads(currentScope!!)
@@ -542,7 +550,7 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
             if (
               !policy.equivalent(
                 derivedState.currentRecord.currentValue,
-                previousValue
+                previousValue,
               )
             ) {
               valueToScopes.forEachScopeOf(derivedState) { scope ->
@@ -572,7 +580,7 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
 
     fun rereadDerivedState(derivedState: DerivedState<*>) {
       val scopeToValues = scopeToValues
-      val token = currentSnapshot().id
+      val token = currentSnapshot().snapshotId.hashCode()
 
       valueToScopes.forEachScopeOf(derivedState) { scope ->
         recordRead(
@@ -580,8 +588,8 @@ class SnapshotStateObserver(private val onChangedExecutor: (callback: () -> Unit
           currentToken = token,
           currentScope = scope,
           recordedValues =
-          scopeToValues[scope]
-            ?: MutableObjectIntMap<Any>().also { scopeToValues[scope] = it }
+            scopeToValues[scope]
+              ?: MutableObjectIntMap<Any>().also { scopeToValues[scope] = it },
         )
       }
     }

@@ -19,7 +19,21 @@
 
 package androidx.compose.runtime
 
-import androidx.compose.runtime.snapshots.*
+import androidx.compose.runtime.snapshots.GlobalSnapshot
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.snapshots.SnapshotId
+import androidx.compose.runtime.snapshots.SnapshotMutableState
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.compose.runtime.snapshots.SnapshotStateSet
+import androidx.compose.runtime.snapshots.StateFactoryMarker
+import androidx.compose.runtime.snapshots.StateObjectImpl
+import androidx.compose.runtime.snapshots.StateRecord
+import androidx.compose.runtime.snapshots.currentSnapshot
+import androidx.compose.runtime.snapshots.overwritable
+import androidx.compose.runtime.snapshots.readable
+import androidx.compose.runtime.snapshots.toSnapshotId
+import androidx.compose.runtime.snapshots.withCurrent
 import kotlin.reflect.KProperty
 
 /**
@@ -42,8 +56,7 @@ import kotlin.reflect.KProperty
  * @see mutableFloatStateOf
  * @see mutableDoubleStateOf
  */
-@StateFactoryMarker
-fun <T> mutableStateOf(
+@StateFactoryMarker fun <T> mutableStateOf(
   value: T,
   policy: SnapshotMutationPolicy<T> = structuralEqualityPolicy(),
 ): MutableState<T> = createSnapshotMutableState(value, policy)
@@ -55,8 +68,7 @@ fun <T> mutableStateOf(
  * @see [MutableState]
  * @see [mutableStateOf]
  */
-@Stable
-interface State<out T> {
+@Stable interface State<out T> {
   val value: T
 }
 
@@ -78,8 +90,7 @@ inline operator fun <T> State<T>.getValue(thisObj: Any?, property: KProperty<*>)
  * @see [State]
  * @see [mutableStateOf]
  */
-@Stable
-interface MutableState<T> : State<T> {
+@Stable interface MutableState<T> : State<T> {
   override var value: T
 
   operator fun component1(): T
@@ -93,7 +104,11 @@ interface MutableState<T> : State<T> {
  * @sample androidx.compose.runtime.samples.DelegatedStateSample
  */
 @Suppress("NOTHING_TO_INLINE")
-inline operator fun <T> MutableState<T>.setValue(thisObj: Any?, property: KProperty<*>, value: T) {
+inline operator fun <T> MutableState<T>.setValue(
+  thisObj: Any?,
+  property: KProperty<*>,
+  value: T,
+) {
   this.value = value
 }
 
@@ -129,12 +144,11 @@ internal open class SnapshotMutableStateImpl<T>(
       }
 
   private var next: StateStateRecord<T> =
-    StateStateRecord(value).also {
-      if (Snapshot.isInSnapshot) {
-        it.next =
-          StateStateRecord(value).also { next ->
-            next.snapshotId = Snapshot.PreexistingSnapshotId
-          }
+    currentSnapshot().let { snapshot ->
+      StateStateRecord(snapshot.snapshotId, value).also {
+        if (snapshot !is GlobalSnapshot) {
+          it.next = StateStateRecord(Snapshot.PreexistingSnapshotId.toSnapshotId(), value)
+        }
       }
     }
 
@@ -160,7 +174,7 @@ internal open class SnapshotMutableStateImpl<T>(
       val merged =
         policy.merge(previousRecord.value, currentRecord.value, appliedRecord.value)
       if (merged != null) {
-        appliedRecord.create().also { (it as StateStateRecord<T>).value = merged }
+        appliedRecord.create(appliedRecord.snapshotId).also { it.value = merged }
       } else {
         null
       }
@@ -170,13 +184,17 @@ internal open class SnapshotMutableStateImpl<T>(
   override fun toString(): String =
     next.withCurrent { "MutableState(value=${it.value})@${hashCode()}" }
 
-  private class StateStateRecord<T>(myValue: T) : StateRecord() {
+  private class StateStateRecord<T>(snapshotId: SnapshotId, myValue: T) :
+    StateRecord(snapshotId) {
     override fun assign(value: StateRecord) {
       @Suppress("UNCHECKED_CAST")
       this.value = (value as StateStateRecord<T>).value
     }
 
-    override fun create(): StateRecord = StateStateRecord(value)
+    override fun create() = StateStateRecord(currentSnapshot().snapshotId, value)
+
+    override fun create(snapshotId: SnapshotId) =
+      StateStateRecord(currentSnapshot().snapshotId, value)
 
     var value: T = myValue
   }
@@ -213,7 +231,7 @@ internal open class SnapshotMutableStateImpl<T>(
  * @see MutableList
  * @see Snapshot.takeSnapshot
  */
-@StateFactoryMarker fun <T> mutableStateListOf() = SnapshotStateList<T>()
+@StateFactoryMarker fun <T> mutableStateListOf(): SnapshotStateList<T> = SnapshotStateList<T>()
 
 /**
  * Create an instance of [MutableList]<T> that is observable and can be snapshot.
@@ -223,14 +241,14 @@ internal open class SnapshotMutableStateImpl<T>(
  * @see MutableList
  * @see Snapshot.takeSnapshot
  */
-@StateFactoryMarker
-fun <T> mutableStateListOf(vararg elements: T) =
+@StateFactoryMarker fun <T> mutableStateListOf(vararg elements: T): SnapshotStateList<T> =
   SnapshotStateList<T>().also { it.addAll(elements.toList()) }
 
 /**
  * Create an instance of [MutableList]<T> from a collection that is observable and can be snapshot.
  */
-fun <T> Collection<T>.toMutableStateList() = SnapshotStateList<T>().also { it.addAll(this) }
+fun <T> Collection<T>.toMutableStateList(): SnapshotStateList<T> =
+  SnapshotStateList<T>().also { it.addAll(this) }
 
 /**
  * Create a instance of [MutableMap]<K, V> that is observable and can be snapshot.
@@ -241,7 +259,7 @@ fun <T> Collection<T>.toMutableStateList() = SnapshotStateList<T>().also { it.ad
  * @see MutableMap
  * @see Snapshot.takeSnapshot
  */
-@StateFactoryMarker fun <K, V> mutableStateMapOf() = SnapshotStateMap<K, V>()
+@StateFactoryMarker fun <K, V> mutableStateMapOf(): SnapshotStateMap<K, V> = SnapshotStateMap<K, V>()
 
 /**
  * Create a instance of [MutableMap]<K, V> that is observable and can be snapshot.
@@ -251,39 +269,40 @@ fun <T> Collection<T>.toMutableStateList() = SnapshotStateList<T>().also { it.ad
  * @see MutableMap
  * @see Snapshot.takeSnapshot
  */
-@StateFactoryMarker
-fun <K, V> mutableStateMapOf(vararg pairs: Pair<K, V>) =
+@StateFactoryMarker fun <K, V> mutableStateMapOf(vararg pairs: Pair<K, V>): SnapshotStateMap<K, V> =
   SnapshotStateMap<K, V>().apply { putAll(pairs.toMap()) }
 
 /**
  * Create an instance of [MutableMap]<K, V> from a collection of pairs that is observable and can be
  * snapshot.
  */
-@Suppress("unused")
-fun <K, V> Iterable<Pair<K, V>>.toMutableStateMap() =
+@Suppress("unused") fun <K, V> Iterable<Pair<K, V>>.toMutableStateMap(): SnapshotStateMap<K, V> =
   SnapshotStateMap<K, V>().also { it.putAll(this.toMap()) }
 
 /**
  * Create a instance of [MutableSet]<T> that is observable and can be snapshot.
  *
- * @sample androidx.compose.runtime.samples.stateListSample
+ * The returned set iteration order is in the order the items were inserted into the set.
+ *
+ * @sample androidx.compose.runtime.samples.stateSetSample
  * @see mutableStateOf
  * @see mutableSetOf
  * @see MutableSet
  * @see Snapshot.takeSnapshot
  */
-@StateFactoryMarker fun <T> mutableStateSetOf() = SnapshotStateSet<T>()
+@StateFactoryMarker fun <T> mutableStateSetOf(): SnapshotStateSet<T> = SnapshotStateSet<T>()
 
 /**
  * Create an instance of [MutableSet]<T> that is observable and can be snapshot.
+ *
+ * The returned set iteration order is in the order the items were inserted into the set.
  *
  * @see mutableStateOf
  * @see mutableSetOf
  * @see MutableSet
  * @see Snapshot.takeSnapshot
  */
-@StateFactoryMarker
-fun <T> mutableStateSetOf(vararg elements: T) =
+@StateFactoryMarker fun <T> mutableStateSetOf(vararg elements: T): SnapshotStateSet<T> =
   SnapshotStateSet<T>().also { it.addAll(elements.toSet()) }
 
 /**
@@ -307,6 +326,5 @@ fun <T> mutableStateSetOf(vararg elements: T) =
  *
  * By using [rememberUpdatedState] a composable function can update these operations in progress.
  */
-@Composable
-fun <T> rememberUpdatedState(newValue: T): State<T> =
+@Composable fun <T> rememberUpdatedState(newValue: T): State<T> =
   remember { mutableStateOf(newValue) }.apply { value = newValue }

@@ -16,7 +16,6 @@
 
 package androidx.compose.runtime.snapshots
 
-import androidx.compose.runtime.ExperimentalComposeApi
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.ThreadContextElement
 
@@ -27,21 +26,19 @@ import kotlinx.coroutines.ThreadContextElement
  *
  * @sample androidx.compose.runtime.samples.snapshotAsContextElementSample
  */
-@ExperimentalComposeApi
 fun Snapshot.asContextElement(): SnapshotContextElement = SnapshotContextElementImpl(this)
 
 /**
  * A [CoroutineContext] element that [enters][Snapshot.enter] an associated snapshot whenever a
  * coroutine associated with this context is resumed.
  */
-@ExperimentalComposeApi
 interface SnapshotContextElement : CoroutineContext.Element {
   companion object Key : CoroutineContext.Key<SnapshotContextElement>
 }
 
-@OptIn(ExperimentalComposeApi::class)
 internal class SnapshotContextElementImpl(private val snapshot: Snapshot) :
   SnapshotContextElement, ThreadContextElement<Snapshot?> {
+
   override val key: CoroutineContext.Key<*> get() = SnapshotContextElement
 
   override fun updateThreadContext(context: CoroutineContext): Snapshot? = snapshot.unsafeEnter()

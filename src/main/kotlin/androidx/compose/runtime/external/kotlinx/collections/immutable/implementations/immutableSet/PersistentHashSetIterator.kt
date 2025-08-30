@@ -5,14 +5,9 @@
 
 package androidx.compose.runtime.external.kotlinx.collections.immutable.implementations.immutableSet
 
-import androidx.compose.runtime.external.kotlinx.collections.immutable.internal.assert
-
 internal open class PersistentHashSetIterator<E>(node: TrieNode<E>) : Iterator<E> {
   protected val path = mutableListOf(TrieNodeIterator<E>())
   protected var pathLastIndex = 0
-
-  @Suppress("OPTIONAL_DECLARATION_USAGE_IN_NON_COMMON_SOURCE")
-  @kotlin.js.JsName("_hasNext")
   private var hasNext = true
 
   init {

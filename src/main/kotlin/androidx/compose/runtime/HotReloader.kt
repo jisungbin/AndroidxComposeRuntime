@@ -18,6 +18,9 @@
 
 package androidx.compose.runtime
 
+import androidx.annotation.RestrictTo
+import androidx.annotation.RestrictTo.Scope.LIBRARY_GROUP
+
 /**
  * Apply Code Changes will invoke the two functions before and after a code swap.
  *
@@ -39,23 +42,25 @@ private class HotReloader {
       Recomposer.loadStateAndComposeForHotReload(token)
     }
 
-    @TestOnly
-    internal fun simulateHotReload(context: Any) {
+    @TestOnly fun simulateHotReload(context: Any) {
       loadStateAndCompose(saveStateAndDispose(context))
     }
 
     @TestOnly
-    internal fun invalidateGroupsWithKey(key: Int) {
+    // b/426871325: required for LiveEdit compatibility
+    @JvmName("invalidateGroupsWithKey") fun invalidateGroupsWithKey(key: Int) {
       return Recomposer.invalidateGroupsWithKey(key)
     }
 
     @TestOnly
-    internal fun getCurrentErrors(): List<RecomposerErrorInfo> {
+    // b/426871325: required for LiveEdit compatibility
+    @JvmName("getCurrentErrors") fun getCurrentErrors(): List<RecomposerErrorInfo> {
       return Recomposer.getCurrentErrors()
     }
 
     @TestOnly
-    internal fun clearErrors() {
+    // b/426871325: required for LiveEdit compatibility
+    @JvmName("clearErrors") fun clearErrors() {
       return Recomposer.clearErrors()
     }
   }
@@ -68,7 +73,7 @@ private class HotReloader {
  *
  * @param context context for disposal.
  */
-@TestOnly fun simulateHotReload(context: Any) = HotReloader.simulateHotReload(context)
+@TestOnly fun simulateHotReload(context: Any): Unit = HotReloader.simulateHotReload(context)
 
 /**
  * Invalidates composed groups with the given key. Calling this method switches recomposer into hot
@@ -76,7 +81,27 @@ private class HotReloader {
  *
  * @param key group key to invalidate.
  */
-@TestOnly fun invalidateGroupsWithKey(key: Int) = HotReloader.invalidateGroupsWithKey(key)
+@TestOnly fun invalidateGroupsWithKey(key: Int): Unit = HotReloader.invalidateGroupsWithKey(key)
+
+/** Disables hot reload mode in recomposer. Test-only API, not for use in production. */
+@TestOnly fun disableHotReloadMode(): Unit = Recomposer.setHotReloadEnabled(false)
+
+/**
+ * Get list of errors captured in composition. This list is only available when recomposer is in hot
+ * reload mode. Test-only API, not for use in production.
+ *
+ * @return pair of error and whether the error is recoverable.
+ */
+@Deprecated(
+  "currentCompositionErrors only reports errors that extend from Exception. This method is " +
+    "unsupported outside of Compose runtime tests. Internally, getCurrentCompositionErrors " +
+    "should be used instead."
+)
+@TestOnly
+@Suppress("ListIterator") fun currentCompositionErrors(): List<Pair<Exception, Boolean>> =
+  getCurrentCompositionErrors().mapNotNull { (cause, recoverable) ->
+    (cause as? Exception ?: return@mapNotNull null) to recoverable
+  }
 
 /**
  * Get list of errors captured in composition. This list is only available when recomposer is in hot
@@ -86,11 +111,11 @@ private class HotReloader {
  */
 // suppressing for test-only api
 @Suppress("ListIterator")
-@TestOnly
-fun currentCompositionErrors(): List<Pair<Exception, Boolean>> =
+@RestrictTo(LIBRARY_GROUP)
+@TestOnly fun getCurrentCompositionErrors(): List<Pair<Throwable, Boolean>> =
   HotReloader.getCurrentErrors().map { it.cause to it.recoverable }
 
 /**
  * Clears current composition errors in hot reload mode. Test-only API, not for use in production.
  */
-@TestOnly fun clearCompositionErrors() = HotReloader.clearErrors()
+@TestOnly fun clearCompositionErrors(): Unit = HotReloader.clearErrors()
