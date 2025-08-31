@@ -51,8 +51,7 @@ internal fun differentBits(slot: Int): Int = bitsForSlot(0b10, slot)
  */
 @Suppress("NAME_SHADOWING", "UNCHECKED_CAST", "PARAMETER_NAME_CHANGED_ON_OVERRIDE")
 @Stable
-internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, block: Any?) :
-  ComposableLambda {
+internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, block: Any?) : ComposableLambda {
   private var _block: Any? = block
   private var scope: RecomposeScope? = null
   private var scopes: MutableList<RecomposeScope>? = null
