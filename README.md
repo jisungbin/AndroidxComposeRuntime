@@ -5,3 +5,5 @@ https://github.com/jisungbin/AndroidxComposeRuntime/blob/main/src/main/kotlin/an
 ## AndroidxComposeRuntime
 
 Clone of https://github.com/androidx/androidx/tree/androidx-main/compose/runtime/runtime.
+
+Copyright @ Google/AOSP

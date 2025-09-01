@@ -36,8 +36,10 @@ import androidx.compose.runtime.tooling.CompositionGroup
 import kotlin.math.max
 import kotlin.math.min
 
-// Nomenclature -
+// [Nomenclature]
+//
 // Address      - an absolute offset into the array ignoring its gap. See Index below.
+//
 // Anchor       - an encoding of Index that allows it to not need to be updated when groups or slots
 //                are inserted or deleted. An anchor is positive if the Index it is tracking is
 //                before the gap and negative if it is after the gap. If the Anchor is negative, it
@@ -48,17 +50,21 @@ import kotlin.math.min
 //                The term anchor is used not only for the Anchor class but for the parent anchor
 //                and data anchors in the group fields which are also anchors but not Anchor
 //                instances.
+//
 // Aux          - auxiliary data that can be associated with a node and set independent of groups
 //                slots. This is used, for example, by the composer to record CompositionLocal
 //                maps as the map is not known at the when the group starts, only when the map is
 //                calculated after using an arbitrary number of slots.
+//
 // Data         - the portion of the slot array associated with the group that contains the slots as
 //                well as the ObjectKey, Node, and Aux if present. The slots for a group are after
 //                the optional fixed group data.
+//
 // Group fields - a set of 5 contiguous integer elements in the groups array aligned at 5
-//                containing the key, node count, group size parent anchor and an anchor to the
+//                containing the key, node count, group size, parent anchor and an anchor to the
 //                group data and flags to indicate if the group is a node, has Aux or has an
 //                ObjectKey. There are a set of extension methods used to access the group fields.
+//
 // Group        - a contiguous range in the groups array. The groups is an inlined array of group
 //                fields. The group fields for a group and all of its children's fields comprise
 //                a group. A groups describes how to interpret the slot array. Groups have an
@@ -66,28 +72,88 @@ import kotlin.math.min
 //                Groups form a tree where the child groups are immediately after the group
 //                fields for the group. This data structure favors a linear scan of the children.
 //                Random access is expensive unless it is through a group anchor.
+//
 // Index        - the logical index of a group or slot in its array. The index doesn't change when
 //                the gap moves. See Address and Anchor above. The index and address of a group
 //                or slot are identical if the gap is at the end of the buffer. This is taken
 //                advantage of in the SlotReader.
+//
 // Key          - an Int value used as a key by the composer.
+//
 // Node         - a value of a node group that can be set independently of the slots of the group.
 //                This is, for example, where the LayoutNode is stored by the slot table when
 //                emitting using the UIEmitter.
+//
 // ObjectKey    - an object that can be used by the composer as part of a groups key. The key()
 //                composable, for example, produces an ObjectKey. Using the key composable
 //                function, for example, produces an ObjectKey value.
+//
 // Slot         - and element in the slot array. Slots are managed by and addressed through a group.
 //                Slots are allocated in the slots array and are stored in order of their respective
 //                groups.
+//
+//
+//
+// [용어 정리]
+//
+// Address      - gap을 무시한 배열의 절대 오프셋을 말합니다. 아래의 Index 항목을 참고하세요.
+//
+// Anchor       - 인덱스를 인코딩한 값으로, 그룹이나 슬롯이 삽입되거나 삭제될 때 갱신할 필요가 없도록 합니다.
+//                추적 중인 인덱스가 gap 이전이면 양수이고 이후면 음수입니다. 앵커가 음수라면 배열 끝에서의
+//                거리를 기록합니다. 슬롯이나 그룹이 삽입되거나 삭제되어도 이 거리는 변하지 않으며, 앵커가
+//                나타내는 인덱스는 삽입 또는 삭제된 그룹이나 슬롯을 자동으로 반영합니다. 앵커는 gap이 움직일 때
+//                주소가 변하는 그룹이나 슬롯의 인덱스를 추적할 경우에만 갱신이 필요합니다. 앵커라는 용어는
+//                Anchor 클래스뿐 아니라 그룹 필드의 부모 앵커와 데이터 앵커에도 사용합니다.
+//
+// Aux          - 그룹 슬롯과 독립적으로 노드에 연결하고 설정할 수 있는 보조 데이터입니다. 예를 들어 Composer가
+//                CompositionLocal 맵을 기록할 때 사용합니다. 그룹이 시작될 때는 맵을 알 수 없고, 임의의 슬롯을
+//                사용한 뒤 계산되므로 Aux에 저장합니다. (auxiliary: 보조의)
+//
+// Data         - 그룹에 연결된 슬롯 배열의 일부로, 슬롯뿐 아니라 ObjectKey, Node, Aux가 함께 포함될 수 있습니다.
+//                그룹의 슬롯은 선택적 고정 그룹 데이터(optional fixed group data) 뒤에 위치합니다.
+//                (portion: (더 큰 것의) 부분/일부)
+//
+// Group fields - groups 배열에서 5개 단위로 정렬된 연속된 5개의 정수 요소 집합으로, key, node 개수, group 크기,
+//                parent anchor, group data의 anchor와 함께 그룹이 노드인지, Aux가 있는지, ObjectKey가 있는지를
+//                나타내는 플래그를 포함합니다. 그룹 필드에 접근하기 위해 확장 메서드가 사용됩니다.
+//
+// Group        - groups 배열에서 연속된 구간을 말합니다. groups는 group field가 인라인된 배열입니다. 하나의 그룹은
+//                해당 그룹의 group field와 그 자식 그룹들의 group field 전체로 구성됩니다. 그룹은 slot 배열을
+//                해석하는 방법을 정의합니다. 그룹은 정수 key, 선택적 ObjectKey, Node, Aux, 0개 이상의 슬롯을
+//                가질 수 있습니다. groups는 트리 구조를 이루며, 자식 그룹은 group의 group field 바로 뒤에 위치합니다.
+//                이 자료 구조는 자식의 선형 탐색에 유리합니다. Random access는 그룹 앵커를 사용해야만 효율적입니다.
+//                (comprise: …으로 구성되다[이뤄지다], interpret: (의미를) 설명[해석]하다)
+//
+// Index        - 배열 안의 그룹이나 슬롯의 논리적 인덱스를 말합니다. gap이 이동하더라도 인덱스는 변하지 않습니다.
+//                위의 Address 및 Anchor 항목을 참고하세요. 그룹이나 슬롯의 인덱스와 주소는 gap이 버퍼 끝에 있을 때
+//                동일합니다. SlotReader는 이 이점을 활용합니다.
+//
+// Key          - Composer가 그룹의 키로 사용하는 정수 값입니다.
+//
+// Node         - 그룹의 슬롯과 독립적으로 저장될 수 있는 노드 그룹의 값입니다. 예를 들어 LayoutNode는 UIEmitter가
+//                내보낼 때 SlotTable에 기록됩니다.
+//
+// ObjectKey    - 그룹 키의 일부로 Composer가 사용하는 객체입니다. 예를 들어 key 컴포저블 함수가 생성하는 값을
+//                말합니다.
+//
+// Slot         - 슬롯 배열의 원소를 말합니다. 슬롯은 그룹을 통해 관리되며 그룹 단위로 주소가 지정됩니다. 슬롯은
+//                slots 배열에 할당되며, 각 그룹에 따라 순서대로 저장됩니다.
 
 // All fields and variables referring to an array index are assumed to be Index values, not Address
 // values, unless explicitly ending in Address.
+//
+// 배열 인덱스를 참조하는 모든 필드와 변수는 명시적으로 이름이 Address로 끝나지 않는 한 Address 값이
+// 아니라 Index 값으로 간주합니다.
 
 // For simplicity and efficiency of the reader, the gaps are always moved to the end resulting in
 // Index and Address being identical in a reader.
+//
+// 단순성과 효율성을 위해 리더에서는 gap을 항상 끝으로 이동시키며, 그 결과 Index와 Address가 동일해집니다.
 
 // The public API refers only to Index values. Address values are internal.
+// 공개 API는 Index 값만을 참조합니다. Address 값은 내부용입니다.
+//
+// (과거엔 SlotTable 클래스가 public이었는데, 현재는 internal임. 아마 과거에만 유효했던 주석인 듯?)
 
 internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
   /**
