@@ -3381,7 +3381,8 @@ internal class SlotWriter(
 
 // Summarize the toString of an object.
 private fun String.summarize(size: Int) =
-  this.replace("androidx.", "a.")
+  this
+    .replace("androidx.", "a.")
     .replace("compose.", "c.")
     .replace("runtime.", "r.")
     .replace("internal.", "ι.")
@@ -3393,9 +3394,12 @@ private fun String.summarize(size: Int) =
     .replace("MutableState", "σ")
     .let { it.substring(0, min(size, it.length)) }
 
-internal fun SlotTable.compositionGroupOf(group: Int): CompositionGroup {
-  return SlotTableGroup(this, group, this.version)
-}
+internal fun SlotTable.compositionGroupOf(group: Int): CompositionGroup =
+  SlotTableGroup(
+    table = this,
+    group = group,
+    version = version,
+  )
 
 private class SlotTableGroup(
   val table: SlotTable,
@@ -3418,14 +3422,14 @@ private class SlotTableGroup(
 
   override val data: Iterable<Any?>
     get() =
-      table.sourceInformationOf(group)?.let {
-        SourceInformationGroupDataIterator(table, group, it)
-      } ?: DataIterator(table, group)
+      table.sourceInformationOf(group)
+        ?.let { SourceInformationGroupDataIterator(table = table, group = group, sourceInformation = it) }
+        ?: DataIterator(table = table, group = group)
 
   override val identity: Any
     get() {
       validateRead()
-      return table.read { it.anchor(group) }
+      return table.read { it.anchor(index = group) }
     }
 
   override val compositionGroups: Iterable<CompositionGroup>
@@ -3642,7 +3646,7 @@ internal class BitVector {
   private var second: Long = 0
   private var others: LongArray = EmptyLongArray
 
-  val size
+  val size: Int
     get() = (others.size + 2) * 64
 
   operator fun get(index: Int): Boolean {
@@ -3775,8 +3779,8 @@ internal class BitVector {
   }
 }
 
-private val Long.firstBitSet
-  inline get() = this.countTrailingZeroBits()
+private val Long.firstBitSet: Int
+  inline get() = countTrailingZeroBits()
 
 private class SourceInformationGroupIterator(
   val table: SlotTable,
