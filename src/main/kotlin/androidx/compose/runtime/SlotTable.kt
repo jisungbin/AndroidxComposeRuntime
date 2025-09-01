@@ -3809,6 +3809,7 @@ private class SourceInformationGroupIterator(
 }
 
 // Parent -1 is reserved to be the root parent index so the anchor must pivot on -2.
+// 부모가 -1인 값은 루트 부모 인덱스로 예약되어 있으므로, 앵커는 -2를 기준으로 해야 합니다.
 private const val parentAnchorPivot = -2
 
 // Group layout
@@ -3821,66 +3822,101 @@ private const val Size_Offset = 3
 private const val DataAnchor_Offset = 4
 private const val Group_Fields_Size = 5
 
-// Key is the key parameter passed into startGroup
+
+// Key is the key parameter passed into startGroup.
+// Key는 startGroup에 전달되는 key 매개변수입니다.
 
 // Group info is laid out as follows,
-// 31 30 29 28_27 26 25 24_23 22 21 20_19 18 17 16__15 14 13 12_11 10 09 08_07 06 05 04_03 02 01 00
-// 0  n  ks ds m  cm|                                node count                                    |
-// where n is set when the group represents a node
-// where ks is whether the group has a object key slot
-// where ds is whether the group has a group data slot
-// where m is whether the group is marked
-// where cm is whether the group contains a mark
+// 그룹 정보는 다음과 같이 배치됩니다:
+//
+// [31 30 29 28]_[27 26 25 24]_[23 22 21 20]_[19 18 17 16]__[15 14 13 12]_[11 10 09 08]_[07 06 05 04]_[03 02 01 00]
+//  0  n  ks ds   m  cm |                             node count (0 ~ 25 bits)                                    |
+//
+// where n is set when the group represents a node.
+// where ks is whether the group has a object key slot.
+// where ds is whether the group has a group data slot.
+// where m is whether the group is marked.
+// where cm is whether the group contains a mark.
+//
+// n은 그룹이 노드를 나타낼 때 설정됩니다.
+// ks는 그룹에 object key 슬롯이 있는지를 나타냅니다.
+// ds는 그룹에 group data 슬롯이 있는지를 나타냅니다.
+// m은 그룹이 표시(marked)되었는지를 나타냅니다.
+// cm은 그룹이 표시(mark)를 포함하는지를 나타냅니다.
+
+
+// Masks and flags
+
+// n은 그룹이 노드를 나타낼 때 설정됩니다.
+private const val NodeBit_Mask = 0b0100_0000_0000_0000__0000_0000_0000_0000
+private const val NodeBit_Shift = 30
+
+// ks는 그룹에 object key 슬롯이 있는지를 나타냅니다.
+private const val ObjectKey_Mask = 0b0010_0000_0000_0000__0000_0000_0000_0000
+private const val ObjectKey_Shift = 29
+
+// ds는 그룹에 group data 슬롯이 있는지를 나타냅니다.
+private const val Aux_Mask = 0b0001_0000_0000_0000__0000_0000_0000_0000
+private const val Aux_Shift = 28
+
+// m은 그룹이 표시(marked)되었는지를 나타냅니다.
+private const val Mark_Mask = 0b0000_1000_0000_0000__0000_0000_0000_0000
+private const val Mark_Shift = 27
+
+// cm은 그룹이 표시(mark)를 포함하는지를 나타냅니다.
+private const val ContainsMark_Mask = 0b0000_0100_0000_0000__0000_0000_0000_0000
+private const val ContainsMark_Shift = 26
+
+private const val NodeCount_Mask = 0b0000_0011_1111_1111__1111_1111_1111_1111
+
+private const val Slots_Shift = Aux_Shift
 
 // Parent anchor is a group anchor to the parent, as the group gap is moved this value is updated to
 // refer to the parent.
+//
+// Parent anchor는 부모를 가리키는 그룹 앵커이며, 그룹 gap이 이동할 때 이 값은 부모를 참조하도록
+// 갱신됩니다.
 
 // Slot count is the total number of group slots, including itself, occupied by the group.
+// 슬롯 수는 해당 그룹이 사용하는 그룹 슬롯의 총 개수(자신 포함)입니다.
+// (occupied: 사용(되는) 중인, 점령된)
 
 // Data anchor is an anchor to the group data. The value is positive if it is before the data gap
 // and it is negative if it is after the data gap. As gaps are moved, these values are updated.
+//
+// Data anchor는 그룹 데이터를 가리키는 앵커입니다. 값이 데이터 gap 이전이면 양수이고,
+// 이후이면 음수입니다. gap이 이동하면 이 값은 갱신됩니다.
 
-// Masks and flags
-private const val NodeBit_Mask = 0b0100_0000_0000_0000__0000_0000_0000_0000
-private const val NodeBit_Shift = 30
-private const val ObjectKey_Mask = 0b0010_0000_0000_0000__0000_0000_0000_0000
-private const val ObjectKey_Shift = 29
-private const val Aux_Mask = 0b0001_0000_0000_0000__0000_0000_0000_0000
-private const val Aux_Shift = 28
-private const val Mark_Mask = 0b0000_1000_0000_0000__0000_0000_0000_0000
-private const val Mark_Shift = 27
-private const val ContainsMark_Mask = 0b0000_0100_0000_0000__0000_0000_0000_0000
-private const val ContainsMark_Shift = 26
-private const val Slots_Shift = Aux_Shift
-private const val NodeCount_Mask = 0b0000_0011_1111_1111__1111_1111_1111_1111
 
 // Special values
 
-// The minimum number of groups to allocate the group table
+// The minimum number of groups to allocate the group table.
+// 그룹 테이블을 할당하기 위한 최소 그룹 수입니다.
 private const val MinGroupGrowthSize = 32
 
-// The minimum number of data slots to allocate in the data slot table
+// The minimum number of data slots to allocate in the data slot table.
+// 데이터 슬롯 테이블에 할당할 최소 데이터 슬롯 수입니다.
 private const val MinSlotsGrowthSize = 32
 
 private inline fun IntArray.groupInfo(address: Int): Int =
   this[address * Group_Fields_Size + GroupInfo_Offset]
 
-private inline fun IntArray.isNode(address: Int) =
+private inline fun IntArray.isNode(address: Int): Boolean =
   this[address * Group_Fields_Size + GroupInfo_Offset] and NodeBit_Mask != 0
 
-private inline fun IntArray.nodeIndex(address: Int) =
+private inline fun IntArray.nodeIndex(address: Int): Int =
   this[address * Group_Fields_Size + DataAnchor_Offset]
 
-private inline fun IntArray.hasObjectKey(address: Int) =
+private inline fun IntArray.hasObjectKey(address: Int): Boolean =
   this[address * Group_Fields_Size + GroupInfo_Offset] and ObjectKey_Mask != 0
 
-private fun IntArray.objectKeyIndex(address: Int) =
+private fun IntArray.objectKeyIndex(address: Int): Int =
   (address * Group_Fields_Size).let { slot ->
     this[slot + DataAnchor_Offset] +
       countOneBits(this[slot + GroupInfo_Offset] shr (ObjectKey_Shift + 1))
   }
 
-private inline fun IntArray.hasAux(address: Int) =
+private inline fun IntArray.hasAux(address: Int): Boolean =
   this[address * Group_Fields_Size + GroupInfo_Offset] and Aux_Mask != 0
 
 private fun IntArray.addAux(address: Int) {
@@ -3888,7 +3924,7 @@ private fun IntArray.addAux(address: Int) {
   this[arrayIndex] = this[arrayIndex] or Aux_Mask
 }
 
-private inline fun IntArray.hasMark(address: Int) =
+private inline fun IntArray.hasMark(address: Int): Boolean =
   this[address * Group_Fields_Size + GroupInfo_Offset] and Mark_Mask != 0
 
 private fun IntArray.updateMark(address: Int, value: Boolean) {
