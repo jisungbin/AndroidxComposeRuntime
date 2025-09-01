@@ -1015,7 +1015,7 @@ internal class CompositionImpl(
             value.recordReadIn(ReaderKind.Composition)
           }
 
-          observations.add(value, scope)
+          observations.add(key = value, scope = scope)
 
           // Record derived state dependency mapping
           if (value is DerivedState<*>) {
@@ -1046,11 +1046,13 @@ internal class CompositionImpl(
 
   override fun recordWriteOf(value: Any) =
     synchronized(lock) {
-      invalidateScopeOfLocked(value)
+      invalidateScopeOfLocked(value = value)
 
       // If writing to dependency of a derived value and the value is changed, invalidate the
       // scopes that read the derived value.
-      derivedStates.forEachScopeOf(value) { invalidateScopeOfLocked(it) }
+      derivedStates.forEachScopeOf(key = value) { derivedState ->
+        invalidateScopeOfLocked(derivedState)
+      }
     }
 
   override fun recompose(): Boolean =

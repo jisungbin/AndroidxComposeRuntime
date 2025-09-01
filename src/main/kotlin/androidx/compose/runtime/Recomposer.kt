@@ -1256,7 +1256,9 @@ public class Recomposer(effectCoroutineContext: CoroutineContext) : CompositionC
       }
 
     try {
-      composing(composition, null) { composition.composeContent(content) }
+      composing(composition = composition, modifiedValues = null) {
+        composition.composeContent(content)
+      }
     } catch (e: Throwable) {
       if (newComposition) {
         synchronized(stateLock) { unregisterCompositionLocked(composition) }
@@ -1535,8 +1537,8 @@ public class Recomposer(effectCoroutineContext: CoroutineContext) : CompositionC
   ): T {
     val snapshot =
       Snapshot.takeMutableSnapshot(
-        readObserverOf(composition),
-        writeObserverOf(composition, modifiedValues),
+        readObserver = readObserverOf(composition = composition),
+        writeObserver = writeObserverOf(composition = composition, modifiedValues = modifiedValues),
       )
     try {
       return snapshot.enter(block)
