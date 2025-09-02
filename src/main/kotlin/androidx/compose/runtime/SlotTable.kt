@@ -472,8 +472,8 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     return groupsSize > 0 && groups.containsMark(0)
   }
 
-  fun sourceInformationOf(group: Int) =
-    sourceInformationMap?.let { map -> tryAnchor(group)?.let { anchor -> map[anchor] } }
+  fun sourceInformationOf(group: Int): GroupSourceInformation? =
+    sourceInformationMap?.let { map -> tryAnchor(index = group)?.let(map::get) }
 
   /**
    * Find the nearest recompose scope for [group] that, when invalidated, will cause [group] group
@@ -2123,6 +2123,7 @@ internal class SlotWriter(
     }
   }
 
+  @Suppress("unused")
   inline fun forAllData(group: Int, block: (index: Int, data: Any?) -> Unit) {
     val address = groupIndexToAddress(group)
     val start = groups.dataIndex(address)
@@ -3384,7 +3385,8 @@ internal class SlotWriter(
 }
 
 // Summarize the toString of an object.
-private fun String.summarize(size: Int) =
+// 객체의 toString 결과를 요약합니다.
+private fun String.summarize(minSize: Int) =
   this
     .replace("androidx.", "a.")
     .replace("compose.", "c.")
@@ -3396,44 +3398,56 @@ private fun String.summarize(size: Int) =
     .replace("Function", "λ")
     .replace("OpaqueKey", "κ")
     .replace("MutableState", "σ")
-    .let { it.substring(0, min(size, it.length)) }
+    .let { it.substring(0, min(minSize, it.length)) }
 
 internal fun SlotTable.compositionGroupOf(group: Int): CompositionGroup =
   SlotTableGroup(
     table = this,
-    group = group,
+    address = group,
     version = version,
   )
 
 private class SlotTableGroup(
   val table: SlotTable,
-  val group: Int,
+  val address: Int, // 원래 이름: group
   val version: Int = table.version,
 ) : CompositionGroup, Iterable<CompositionGroup> {
   override val isEmpty: Boolean
-    get() = table.groups.groupSize(group) == 0
+    get() = table.groups.groupSize(address = address) == 0
 
   override val key: Any
     get() =
-      if (table.groups.hasObjectKey(group)) table.slots[table.groups.objectKeyIndex(group)]!!
-      else table.groups.key(group)
+      if (table.groups.hasObjectKey(address = address))
+        table.slots[table.groups.objectKeyIndex(address = address)]!!
+      else
+        table.groups.key(address = address)
 
   override val sourceInfo: String?
-    get() = table.sourceInformationOf(group)?.sourceInformation
+    get() = table.sourceInformationOf(group = address)?.sourceInformation
 
   override val node: Any?
-    get() = if (table.groups.isNode(group)) table.slots[table.groups.nodeIndex(group)] else null
+    get() =
+      if (table.groups.isNode(address = address))
+        table.slots[table.groups.nodeIndex(address = address)]!!
+      else
+        null
 
   override val data: Iterable<Any?>
     get() =
-      table.sourceInformationOf(group)
-        ?.let { SourceInformationGroupDataIterator(table = table, group = group, sourceInformation = it) }
-        ?: DataIterator(table = table, group = group)
+      table.sourceInformationOf(group = address)
+        ?.let { sourceInformation ->
+          SourceInformationGroupDataIterator(
+            table = table,
+            group = address,
+            sourceInformation = sourceInformation,
+          )
+        }
+        ?: DataIterator(table = table, group = address)
 
   override val identity: Any
     get() {
       validateRead()
-      return table.read { it.anchor(index = group) }
+      return table.read { reader -> reader.anchor(index = address) }
     }
 
   override val compositionGroups: Iterable<CompositionGroup>
@@ -3441,21 +3455,33 @@ private class SlotTableGroup(
 
   override fun iterator(): Iterator<CompositionGroup> {
     validateRead()
-    return table.sourceInformationOf(group)?.let {
-      SourceInformationGroupIterator(table, group, it, AnchoredGroupPath(group))
-    } ?: GroupIterator(table, group + 1, group + table.groups.groupSize(group))
+    return table.sourceInformationOf(group = address)
+      ?.let { sourceInformation ->
+        SourceInformationGroupIterator(
+          table = table,
+          parent = address,
+          sourceInformation = sourceInformation,
+          path = AnchoredGroupPath(group = address),
+        )
+      }
+      ?: GroupIterator(
+        table = table,
+        start = address + 1,
+        end = address + table.groups.groupSize(address = address),
+      )
   }
 
   override val groupSize: Int
-    get() = table.groups.groupSize(group)
+    get() = table.groups.groupSize(address = address)
 
   override val slotsSize: Int
     get() {
-      val nextGroup = group + groupSize
-      val nextSlot =
-        if (nextGroup < table.groupsSize) table.groups.dataAnchor(nextGroup)
+      val nextGroup = address + groupSize
+      val nextSlot: Int =
+        if (nextGroup < table.groupsSize) table.groups.dataAnchor(address = nextGroup)
         else table.slotsSize
-      return nextSlot - table.groups.dataAnchor(group)
+
+      return nextSlot - table.groups.dataAnchor(address = address)
     }
 
   private fun validateRead() {
@@ -3466,12 +3492,20 @@ private class SlotTableGroup(
 
   override fun find(identityToFind: Any): CompositionGroup? {
     fun findAnchoredGroup(anchor: Anchor): CompositionGroup? {
-      if (table.ownsAnchor(anchor)) {
-        val anchorGroup = table.anchorIndex(anchor)
-        if (anchorGroup >= group && (anchorGroup - group < table.groups.groupSize(group))) {
-          return SlotTableGroup(table, anchorGroup, version)
+      if (table.ownsAnchor(anchor = anchor)) {
+        val anchorGroup = table.anchorIndex(anchor = anchor)
+        if (
+          anchorGroup >= address &&
+          anchorGroup - address < table.groups.groupSize(address = address)
+        ) {
+          return SlotTableGroup(
+            table = table,
+            address = anchorGroup,
+            version = version,
+          )
         }
       }
+
       return null
     }
 
@@ -3479,45 +3513,51 @@ private class SlotTableGroup(
       group.compositionGroups.drop(index).firstOrNull()
 
     return when (identityToFind) {
-      is Anchor -> findAnchoredGroup(identityToFind)
-      is SourceInformationSlotTableGroupIdentity ->
-        find(identityToFind.parentIdentity)?.let {
-          findRelativeGroup(it, identityToFind.index)
+      is Anchor -> findAnchoredGroup(anchor = identityToFind)
+      is SourceInformationSlotTableGroupIdentity -> {
+        find(identityToFind = identityToFind.parentIdentity)?.let { compositionGroup ->
+          findRelativeGroup(group = compositionGroup, index = identityToFind.index)
         }
+      }
       else -> null
     }
   }
 
   override fun equals(other: Any?): Boolean =
     other is SlotTableGroup &&
-      other.group == group &&
+      other.address == address &&
       other.version == version &&
       other.table == table
 
-  override fun hashCode(): Int = group + 31 * table.hashCode()
+  override fun hashCode(): Int = address + 31 * table.hashCode()
 }
 
-private data class SourceInformationSlotTableGroupIdentity(val parentIdentity: Any, val index: Int)
+private data class SourceInformationSlotTableGroupIdentity(
+  val parentIdentity: Any,
+  val index: Int,
+)
 
 private sealed class SourceInformationGroupPath {
   abstract fun getIdentity(table: SlotTable): Any
 }
 
 private class AnchoredGroupPath(val group: Int) : SourceInformationGroupPath() {
-  override fun getIdentity(table: SlotTable): Any {
-    return table.anchor(group)
-  }
+  override fun getIdentity(table: SlotTable): Anchor = table.anchor(index = group)
 
   override fun equals(other: Any?): Boolean = other is AnchoredGroupPath && other.group == group
 
   override fun hashCode(): Int = group * 31
 }
 
-private class RelativeGroupPath(val parent: SourceInformationGroupPath, val index: Int) :
-  SourceInformationGroupPath() {
-  override fun getIdentity(table: SlotTable): Any {
-    return SourceInformationSlotTableGroupIdentity(parent.getIdentity(table), index)
-  }
+private class RelativeGroupPath(
+  val parent: SourceInformationGroupPath,
+  val index: Int,
+) : SourceInformationGroupPath() {
+  override fun getIdentity(table: SlotTable): SourceInformationSlotTableGroupIdentity =
+    SourceInformationSlotTableGroupIdentity(
+      parentIdentity = parent.getIdentity(table = table),
+      index = index,
+    )
 
   override fun equals(other: Any?): Boolean =
     other is RelativeGroupPath && other.parent == parent && other.index == index
@@ -3531,7 +3571,8 @@ private class SourceInformationSlotTableGroup(
   val sourceInformation: GroupSourceInformation,
   val identityPath: SourceInformationGroupPath,
 ) : CompositionGroup, Iterable<CompositionGroup> {
-  override val key: Any = sourceInformation.key
+  override val key: Int = sourceInformation.key
+
   override val sourceInfo: String?
     get() = sourceInformation.sourceInformation
 
@@ -3539,36 +3580,54 @@ private class SourceInformationSlotTableGroup(
     get() = null
 
   override val data: Iterable<Any?>
-    get() = SourceInformationGroupDataIterator(table, parent, sourceInformation)
+    get() = SourceInformationGroupDataIterator(
+      table = table,
+      group = parent,
+      sourceInformation = sourceInformation,
+    )
 
   override val compositionGroups: Iterable<CompositionGroup> = this
+
   override val identity: Any
-    get() = identityPath.getIdentity(table)
+    get() = identityPath.getIdentity(table = table)
 
   override val isEmpty: Boolean
     get() = sourceInformation.groups?.isEmpty() != false
 
   override fun iterator(): Iterator<CompositionGroup> =
-    SourceInformationGroupIterator(table, parent, sourceInformation, identityPath)
+    SourceInformationGroupIterator(
+      table = table,
+      parent = parent,
+      sourceInformation = sourceInformation,
+      path = identityPath,
+    )
 
   override fun equals(other: Any?): Boolean =
     other is SourceInformationSlotTableGroup &&
       // sourceInformation is intentionally omitted from this list as its value is implied
       // by parent, table and identityPath. In other words, these form a key to the
       // sourceInformation and it will never compare unequal when the others are equal.
+      //
+      // sourceInformation은 의도적으로 이 목록에서 제외됩니다. 그 값은 parent, table,
+      // identityPath에 의해 암시되며, 다시 말해 이들이 sourceInformation의 키를 형성하므로
+      // 다른 값들이 동일할 때 sourceInformation만 다르게 비교되는 일은 없습니다.
       other.parent == parent &&
       other.table == table &&
       other.identityPath == identityPath
 
   override fun hashCode(): Int {
-    var result = parent * 31 + table.hashCode()
-    result = result * 31 + identityPath.hashCode()
+    var result = parent
+    result += table.hashCode() * 31
+    result += identityPath.hashCode() * 31
     return result
   }
 }
 
-private class GroupIterator(val table: SlotTable, start: Int, val end: Int) :
-  Iterator<CompositionGroup> {
+private class GroupIterator(
+  val table: SlotTable,
+  start: Int,
+  val end: Int,
+) : Iterator<CompositionGroup> {
   private var index = start
   private val version = table.version
 
@@ -3576,14 +3635,15 @@ private class GroupIterator(val table: SlotTable, start: Int, val end: Int) :
     if (table.writer) throwConcurrentModificationException()
   }
 
-  override fun hasNext() = index < end
+  override fun hasNext(): Boolean = index < end
 
   override fun next(): CompositionGroup {
     validateRead()
     val group = index
 
-    index += table.groups.groupSize(group)
-    return SlotTableGroup(table, group, version)
+    index += table.groups.groupSize(address = group)
+
+    return SlotTableGroup(table = table, address = group, version = version)
   }
 
   private fun validateRead() {
@@ -3594,9 +3654,13 @@ private class GroupIterator(val table: SlotTable, start: Int, val end: Int) :
 }
 
 private class DataIterator(val table: SlotTable, group: Int) : Iterable<Any?>, Iterator<Any?> {
-  val start = table.groups.dataAnchor(group)
-  val end =
-    if (group + 1 < table.groupsSize) table.groups.dataAnchor(group + 1) else table.slotsSize
+  val start: Int = table.groups.dataAnchor(address = group)
+  val end: Int =
+    if (group + 1 < table.groupsSize)
+      table.groups.dataAnchor(address = group + 1)
+    else
+      table.slotsSize
+
   var index = start
 
   override fun iterator(): Iterator<Any?> = this
@@ -3604,7 +3668,12 @@ private class DataIterator(val table: SlotTable, group: Int) : Iterable<Any?>, I
   override fun hasNext(): Boolean = index < end
 
   override fun next(): Any? =
-    (if (index >= 0 && index < table.slots.size) table.slots[index] else null).also { index++ }
+    (
+      if (index >= 0 && index < table.slots.size)
+        table.slots[index]
+      else
+        null
+      ).also { index++ }
 }
 
 private class SourceInformationGroupDataIterator(
@@ -3612,26 +3681,31 @@ private class SourceInformationGroupDataIterator(
   group: Int,
   sourceInformation: GroupSourceInformation,
 ) : Iterable<Any?>, Iterator<Any?> {
-  private val base = table.groups.dataAnchor(group)
+  private val base: Int = table.groups.dataAnchor(address = group)
   private val start: Int = sourceInformation.dataStartOffset
   private val end: Int =
-    sourceInformation.dataEndOffset.let {
-      if (it > 0) it
+    sourceInformation.dataEndOffset.let { endOffset ->
+      if (endOffset > 0) endOffset
       else
-        (if (group + 1 < table.groupsSize) table.groups.dataAnchor(group + 1)
-        else table.slotsSize) - base
+        (if (group + 1 < table.groupsSize)
+          table.groups.dataAnchor(address = group + 1)
+        else
+          table.slotsSize
+          ) - base
     }
+
   private val filter =
-    BitVector().also {
-      // Filter any groups
+    BitVector().also { vector ->
+      // Filter any groups.
+      // 모든 그룹을 걸러냅니다.
       val groups = sourceInformation.groups ?: return@also
       groups.fastForEach { info ->
         if (info is GroupSourceInformation) {
-          it.setRange(info.dataStartOffset, info.dataEndOffset)
+          vector.setRange(start = info.dataStartOffset, end = info.dataEndOffset)
         }
       }
     }
-  private var index = filter.nextClear(start)
+  private var index: Int = filter.nextClear(index = start)
 
   override fun iterator(): Iterator<Any?> = this
 
@@ -3639,7 +3713,7 @@ private class SourceInformationGroupDataIterator(
 
   override fun next(): Any? =
     (if (index in 0 until end) table.slots[base + index] else null).also {
-      index = filter.nextClear(index + 1)
+      index = filter.nextClear(index = index + 1)
     }
 }
 
@@ -3686,7 +3760,7 @@ internal class BitVector {
     val mask = 1L shl newIndex
     var others = others
     if (address >= others.size) {
-      others = others.copyOf(address + 1)
+      others = others.copyOf(newSize = address + 1)
       this.others = others
     }
 
@@ -3694,20 +3768,27 @@ internal class BitVector {
     others[address] = (bits and mask.inv()) or (value.toBit().toLong() shl newIndex)
   }
 
-  fun nextSet(index: Int) = nextBit(index) { it }
+  fun nextSet(index: Int): Int = nextBit(index) { it }
 
-  fun nextClear(index: Int) = nextBit(index) { it.inv() }
+  fun nextClear(index: Int): Int = nextBit(index) { it.inv() }
 
   /**
    * Returns the index of the next bit in this bit vector, starting at index. The [valueSelector]
    * lets the caller modify the value before finding its first bit set.
+   *
+   * 이 비트 벡터에서 지정한 인덱스부터 시작하여 다음 비트의 인덱스를 반환합니다. [valueSelector]를
+   * 사용하면 호출자가 값을 수정한 뒤 그 안에서 첫 번째로 설정된 비트를 찾을 수 있습니다.
    */
   @Suppress("NAME_SHADOWING")
   private inline fun nextBit(index: Int, valueSelector: (Long) -> Long): Int {
     if (index < 64) {
       // We shift right (unsigned) then back left to drop the first "index"
       // bits. This will set them all to 0, thus guaranteeing that the search
-      // performed by [firstBitSet] will start at index
+      // performed by [firstBitSet] will start at index.
+      //
+      // 오른쪽으로 부호 없는 시프트를 한 뒤 다시 왼쪽으로 시프트하여 처음
+      // “index” 비트들을 제거합니다. 이렇게 하면 해당 비트들이 모두 0이 되어,
+      // [firstBitSet]의 탐색이 index에서 시작됨을 보장합니다.
       val bit = (valueSelector(first) ushr index shl index).firstBitSet
       if (bit < 64) return bit
     }
@@ -3724,13 +3805,19 @@ internal class BitVector {
 
     for (i in start until others.size) {
       var value = valueSelector(others[i])
+
       // For the first element, the start index may be in the middle of the
       // 128 bit word, so we apply the same shift trick as for [first] and
       // [second] to start at the right spot in the bit field.
+      //
+      // 첫 번째 요소의 경우 시작 인덱스가 128비트 워드의 중간일 수 있으므로,
+      // 비트 필드에서 올바른 위치에서 시작하기 위해 [first]와 [second]에서
+      // 사용한 것과 동일한 시프트 기법을 적용합니다.
       if (i == start) {
         val shift = index % 64
         value = value ushr shift shl shift
       }
+
       val bit = value.firstBitSet
       if (bit < 64) return 128 + i * 64 + bit
     }
@@ -3744,43 +3831,67 @@ internal class BitVector {
 
     // If the range is valid we will use ~0L as our mask to create strings of 1s below,
     // otherwise we use 0 so we don't set any bits. We could return when start >= end
-    // but this won't be a common case, so skip the branch
+    // but this won't be a common case, so skip the branch.
+    //
+    // 범위가 유효하다면 마스크로 ~0L을 사용하여 아래에서 1로 채워진 비트를 만듭니다.
+    // 그렇지 않다면 비트를 설정하지 않도록 0을 사용합니다. start가 end 이상일 때 바로
+    // 반환할 수도 있지만, 이는 흔한 경우가 아니므로 분기 처리는 생략합니다.
     val bits = if (start < end) -1L else 0L
 
-    // Set the bits to 0 if we don't need to set any bit in the first word
+    // Set the bits to 0 if we don't need to set any bit in the first word.
+    // 첫 번째 워드에서 비트를 설정할 필요가 없으면 해당 비트들을 0으로 설정합니다.
     var selector = bits * (start < 64).toBit()
+
     // Take our selector (either all 0s or all 1s), perform an unsigned shift to the
     // right to create a new word with "clampedEnd - start" bits, then shift it back
     // left to where the range begins. This lets us set up to 64 bits at a time without
-    // doing an expensive loop that calls set()
+    // doing an expensive loop that calls set().
+    //
+    // 선택자(모두 0이거나 모두 1)를 오른쪽으로 부호 없는 시프트하여 "clampedEnd - start"
+    // 비트를 가진 새로운 워드를 만든 뒤, 범위가 시작되는 위치로 다시 왼쪽 시프트합니다.
+    // 이렇게 하면 set()을 반복 호출하는 비싼 루프 없이 한 번에 최대 64비트를 설정할 수 있습니다.
     val firstValue = (selector ushr (64 - (min(64, end) - start))) shl start
+
     first = first or firstValue
-    // If we need to set bits in the second word, clamp our start otherwise return now
+
+    // If we need to set bits in the second word, clamp our start otherwise return now.
+    //
+    // 두 번째 워드에 비트를 설정해야 한다면 start 값을 제한(clamp)하고, 그렇지 않으면
+    // 바로 반환합니다.
     if (end > 64) start = max(start, 64) else return
 
-    // Set the bits to 0 if we don't need to set any bit in the second word
+    // Set the bits to 0 if we don't need to set any bit in the second word.
+    // 두 번째 워드에서 비트를 설정할 필요가 없으면 해당 비트들을 0으로 설정합니다.
     selector = bits * (start < 128).toBit()
-    // See firstValue above
+
+    // See firstValue above.
+    // 위의 firstValue를 참조하세요.
     val secondValue = (selector ushr (128 - (min(128, end) - start))) shl start
+
     second = second or secondValue
-    // If we need to set bits in the remainder array, clamp our start otherwise return now
+
+    // If we need to set bits in the remainder array, clamp our start otherwise return now.
+    //
+    // 나머지 배열에 비트를 설정해야 한다면 start 값을 제한(clamp)하고, 그렇지 않으면 바로
+    // 반환합니다.
     if (end > 128) start = max(start, 128) else return
 
     for (bit in start until end) this[bit] = true
   }
 
-  override fun toString(): String = buildString {
-    var first = true
-    append("BitVector [")
-    for (i in 0 until size) {
-      if (this@BitVector[i]) {
-        if (!first) append(", ")
-        first = false
-        append(i)
+  override fun toString(): String =
+    buildString {
+      var first = true
+      append("BitVector [")
+      for (i in 0 until size) {
+        if (this@BitVector[i]) {
+          if (!first) append(", ")
+          first = false
+          append(i)
+        }
       }
+      append(']')
     }
-    append(']')
-  }
 }
 
 private val Long.firstBitSet: Int
@@ -3789,24 +3900,34 @@ private val Long.firstBitSet: Int
 private class SourceInformationGroupIterator(
   val table: SlotTable,
   val parent: Int,
-  val group: GroupSourceInformation,
+  val sourceInformation: GroupSourceInformation,
   val path: SourceInformationGroupPath,
 ) : Iterator<CompositionGroup> {
-  private val version = table.version
+  private val version: Int = table.version
   private var index = 0
 
-  override fun hasNext(): Boolean = group.groups?.let { index < it.size } ?: false
+  override fun hasNext(): Boolean =
+    sourceInformation.groups?.let { groups -> index < groups.size } ?: false
 
   override fun next(): CompositionGroup {
-    return when (val group = group.groups?.get(index++)) {
-      is Anchor -> SlotTableGroup(table, group.location, version)
-      is GroupSourceInformation ->
+    return when (val group = sourceInformation.groups?.get(index++)) {
+      is Anchor -> {
+        SlotTableGroup(
+          table = table,
+          address = group.location,
+          version = version,
+        )
+      }
+
+      is GroupSourceInformation -> {
         SourceInformationSlotTableGroup(
           table = table,
           parent = parent,
           sourceInformation = group,
-          identityPath = RelativeGroupPath(path, index - 1),
+          identityPath = RelativeGroupPath(parent = path, index = index - 1),
         )
+      }
+
       else -> composeRuntimeError("Unexpected group information structure")
     }
   }
