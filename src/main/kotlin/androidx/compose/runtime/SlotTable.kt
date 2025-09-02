@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-@file:Suppress("NOTHING_TO_INLINE", "KotlinRedundantDiagnosticSuppress", "PrimitiveInCollection")
+@file:Suppress("NOTHING_TO_INLINE")
 
 package androidx.compose.runtime
 
@@ -33,6 +33,7 @@ import androidx.compose.runtime.snapshots.fastForEach
 import androidx.compose.runtime.snapshots.fastMap
 import androidx.compose.runtime.tooling.CompositionData
 import androidx.compose.runtime.tooling.CompositionGroup
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -99,8 +100,8 @@ import kotlin.math.min
 // Address      - gap을 무시한 배열의 절대 오프셋을 말합니다. 아래의 Index 항목을 참고하세요.
 //
 // Anchor       - 인덱스를 인코딩한 값으로, 그룹이나 슬롯이 삽입되거나 삭제될 때 갱신할 필요가 없도록 합니다.
-//                추적 중인 인덱스가 gap 이전이면 양수이고 이후면 음수입니다. 앵커가 음수라면 배열 끝에서의
-//                거리를 기록합니다. 슬롯이나 그룹이 삽입되거나 삭제되어도 이 거리는 변하지 않으며, 앵커가
+//                추적 중인 인덱스가 gap 이전이면 양수이고 이후면 음수입니다. **앵커가 음수라면 배열 끝에서의
+//                거리를 기록합니다.** 슬롯이나 그룹이 삽입되거나 삭제되어도 이 거리는 변하지 않으며, 앵커가
 //                나타내는 인덱스는 삽입 또는 삭제된 그룹이나 슬롯을 자동으로 반영합니다. 앵커는 gap이 움직일 때
 //                주소가 변하는 그룹이나 슬롯의 인덱스를 추적할 경우에만 갱신이 필요합니다. 앵커라는 용어는
 //                Anchor 클래스뿐 아니라 그룹 필드의 부모 앵커와 데이터 앵커에도 사용합니다.
@@ -312,7 +313,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    */
   fun ownsAnchor(anchor: Anchor): Boolean {
     return anchor.valid &&
-      anchors.search(anchor.location, groupsSize).let { it >= 0 && anchors[it] == anchor }
+      anchors.searchAnchorLocation(anchor.location, groupsSize).let { it >= 0 && anchors[it] == anchor }
   }
 
   fun inGroup(groupAnchor: Anchor, anchor: Anchor): Boolean {
@@ -757,19 +758,22 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
  * return false. The current index of the group can be determined by passing either the [SlotTable]
  * or [SlotWriter] to [toIndexFor]. If a [SlotWriter] is active, it must be used instead of the
  * [SlotTable] as the anchor index could have shifted due to operations performed on the writer.
+ *
+ * [Anchor]는 자신이 추적하는 그룹 앞에 다른 그룹들이 삽입되거나 제거되면서 인덱스가 바뀌더라도
+ * 해당 그룹을 추적합니다. [Anchor]가 추적하는 그룹이 직접 또는 간접적으로 제거되면 [valid]는
+ * false를 반환합니다. 그룹의 현재 인덱스는 [SlotTable]이나 [SlotWriter]를 [toIndexFor]에 전달해
+ * 확인할 수 있습니다. [SlotWriter]가 활성 상태라면 반드시 [SlotTable] 대신 사용해야 하는데,
+ * 이는 writer에서 수행된 작업 때문에 앵커 인덱스가 달라졌을 수 있기 때문입니다.
  */
-internal class Anchor(loc: Int) {
-  internal var location: Int = loc
-  val valid
+internal class Anchor(internal var location: Int) {
+  val valid: Boolean
     get() = location != Int.MIN_VALUE
 
-  fun toIndexFor(slots: SlotTable) = slots.anchorIndex(this)
+  fun toIndexFor(slots: SlotTable): Int = slots.anchorIndex(anchor = this)
 
-  fun toIndexFor(writer: SlotWriter) = writer.anchorIndex(this)
+  fun toIndexFor(writer: SlotWriter): Int = writer.anchorIndex(anchor = this)
 
-  override fun toString(): String {
-    return "${super.toString()}{ location = $location }"
-  }
+  override fun toString(): String = "${super.toString()}{ location = $location }"
 }
 
 internal class GroupSourceInformation(
@@ -1911,8 +1915,8 @@ internal class SlotWriter(
           address = currentAddress,
           key = key,
           isNode = isNode,
-          hasDataKey = hasObjectKey,
-          hasData = hasAux,
+          hasObjectKey = hasObjectKey,
+          hasAux = hasAux,
           parentAnchor = parent,
           dataAnchor = dataAnchor,
         )
@@ -2427,8 +2431,8 @@ internal class SlotWriter(
       toWriter.slotsGapOwner = slotsGapOwner
 
       // Extract the anchors in range
-      val startAnchors = fromWriter.anchors.locationOf(fromIndex, fromWriter.size)
-      val endAnchors = fromWriter.anchors.locationOf(sourceGroupsEnd, fromWriter.size)
+      val startAnchors = fromWriter.anchors.anchorLocationOf(fromIndex, fromWriter.size)
+      val endAnchors = fromWriter.anchors.anchorLocationOf(sourceGroupsEnd, fromWriter.size)
       val anchors =
         if (startAnchors < endAnchors) {
           val sourceAnchors = fromWriter.anchors
@@ -2444,7 +2448,7 @@ internal class SlotWriter(
 
           // Insert them into the new table
           val insertLocation =
-            toWriter.anchors.locationOf(toWriter.currentGroup, toWriter.size)
+            toWriter.anchors.anchorLocationOf(toWriter.currentGroup, toWriter.size)
           toWriter.anchors.addAll(insertLocation, anchors)
 
           // Remove them from the old table
@@ -3099,7 +3103,7 @@ internal class SlotWriter(
       // Gap is moving up
       // All anchors between the new gap and the old gap switch to be anchored to the
       // front of the table instead of the end.
-      var index = anchors.locationOf(previousGapStart, size)
+      var index = anchors.anchorLocationOf(previousGapStart, size)
       while (index < anchors.size) {
         val anchor = anchors[index]
         val location = anchor.location
@@ -3114,7 +3118,7 @@ internal class SlotWriter(
     } else {
       // Gap is moving down. All anchors between newGapStart and previousGapStart need now
       // to be anchored to the end of the table instead of the front of the table.
-      var index = anchors.locationOf(newGapStart, size)
+      var index = anchors.anchorLocationOf(newGapStart, size)
       while (index < anchors.size) {
         val anchor = anchors[index]
         val location = anchor.location
@@ -3136,7 +3140,7 @@ internal class SlotWriter(
     val removeEnd = gapStart + size
     val groupsSize = capacity - gapLen
     var index =
-      anchors.locationOf(gapStart + size, groupsSize).let {
+      anchors.anchorLocationOf(gapStart + size, groupsSize).let {
         if (it >= anchors.size) it - 1 else it
       }
     var removeAnchorEnd = 0
@@ -3165,7 +3169,7 @@ internal class SlotWriter(
     val groupsSize = this.size
 
     // Remove all the anchors in range from the original location
-    val index = anchors.locationOf(originalLocation, groupsSize)
+    val index = anchors.anchorLocationOf(originalLocation, groupsSize)
     val removedAnchors = mutableListOf<Anchor>()
     if (index >= 0) {
       while (index < anchors.size) {
@@ -3189,7 +3193,7 @@ internal class SlotWriter(
       } else {
         anchor.location = newAnchorIndex
       }
-      val insertIndex = anchors.locationOf(newAnchorIndex, groupsSize)
+      val insertIndex = anchors.anchorLocationOf(newAnchorIndex, groupsSize)
       anchors.add(insertIndex, anchor)
     }
   }
@@ -3820,14 +3824,16 @@ private const val GroupInfo_Offset = 1
 private const val ParentAnchor_Offset = 2
 private const val Size_Offset = 3
 private const val DataAnchor_Offset = 4
+
+// 하나의 그룹은 5개의 필드로 구성되어 있음 (하나의 그룹당 5개의 슬롯 사용?)
 private const val Group_Fields_Size = 5
 
 
 // Key is the key parameter passed into startGroup.
 // Key는 startGroup에 전달되는 key 매개변수입니다.
 
-// Group info is laid out as follows,
-// 그룹 정보는 다음과 같이 배치됩니다:
+// [Group info] is laid out as follows,
+// [Group info]는 다음과 같이 배치됩니다:
 //
 // [31 30 29 28]_[27 26 25 24]_[23 22 21 20]_[19 18 17 16]__[15 14 13 12]_[11 10 09 08]_[07 06 05 04]_[03 02 01 00]
 //  0  n  ks ds   m  cm |                             node count (0 ~ 25 bits)                                    |
@@ -3840,7 +3846,7 @@ private const val Group_Fields_Size = 5
 //
 // n은 그룹이 노드를 나타낼 때 설정됩니다.
 // ks는 그룹에 object key 슬롯이 있는지를 나타냅니다.
-// ds는 그룹에 group data 슬롯이 있는지를 나타냅니다.
+// ds는 그룹에 group data 슬롯이 있는지를 나타냅니다. (Aux에 해당)
 // m은 그룹이 표시(marked)되었는지를 나타냅니다.
 // cm은 그룹이 표시(mark)를 포함하는지를 나타냅니다.
 
@@ -3898,101 +3904,124 @@ private const val MinGroupGrowthSize = 32
 // 데이터 슬롯 테이블에 할당할 최소 데이터 슬롯 수입니다.
 private const val MinSlotsGrowthSize = 32
 
+
+// address: gap을 무시한 배열의 절대 오프셋을 말합니다.
 private inline fun IntArray.groupInfo(address: Int): Int =
   this[address * Group_Fields_Size + GroupInfo_Offset]
 
 private inline fun IntArray.isNode(address: Int): Boolean =
-  this[address * Group_Fields_Size + GroupInfo_Offset] and NodeBit_Mask != 0
+  groupInfo(address = address) and NodeBit_Mask != 0
 
 private inline fun IntArray.nodeIndex(address: Int): Int =
   this[address * Group_Fields_Size + DataAnchor_Offset]
 
 private inline fun IntArray.hasObjectKey(address: Int): Boolean =
-  this[address * Group_Fields_Size + GroupInfo_Offset] and ObjectKey_Mask != 0
+  groupInfo(address = address) and ObjectKey_Mask != 0
 
 private fun IntArray.objectKeyIndex(address: Int): Int =
-  (address * Group_Fields_Size).let { slot ->
-    this[slot + DataAnchor_Offset] +
-      countOneBits(this[slot + GroupInfo_Offset] shr (ObjectKey_Shift + 1))
-  }
+  this[address * Group_Fields_Size + DataAnchor_Offset] +
+    countOneBits(groupInfo(address = address) shr (ObjectKey_Shift + 1))
 
 private inline fun IntArray.hasAux(address: Int): Boolean =
-  this[address * Group_Fields_Size + GroupInfo_Offset] and Aux_Mask != 0
+  groupInfo(address = address) and Aux_Mask != 0
 
 private fun IntArray.addAux(address: Int) {
-  val arrayIndex = address * Group_Fields_Size + GroupInfo_Offset
-  this[arrayIndex] = this[arrayIndex] or Aux_Mask
+  val groupInfoIndex = address * Group_Fields_Size + GroupInfo_Offset
+  this[groupInfoIndex] = this[groupInfoIndex] or Aux_Mask
 }
 
 private inline fun IntArray.hasMark(address: Int): Boolean =
-  this[address * Group_Fields_Size + GroupInfo_Offset] and Mark_Mask != 0
+  groupInfo(address = address) and Mark_Mask != 0
 
 private fun IntArray.updateMark(address: Int, value: Boolean) {
-  val arrayIndex = address * Group_Fields_Size + GroupInfo_Offset
-  val element = this[arrayIndex]
-  this[arrayIndex] = (element and Mark_Mask.inv()) or (value.toBit() shl Mark_Shift)
+  val groupInfoIndex = address * Group_Fields_Size + GroupInfo_Offset
+  this[groupInfoIndex] =
+    (this[groupInfoIndex] and Mark_Mask.inv()) or // inv(): Mark_Mask 위치에 있는 비트를 0으로 만듦
+      (value.toBit() shl Mark_Shift)
 }
 
-private inline fun IntArray.containsMark(address: Int) =
-  this[address * Group_Fields_Size + GroupInfo_Offset] and ContainsMark_Mask != 0
+private inline fun IntArray.containsMark(address: Int): Boolean =
+  groupInfo(address = address) and ContainsMark_Mask != 0
 
 private fun IntArray.updateContainsMark(address: Int, value: Boolean) {
-  val arrayIndex = address * Group_Fields_Size + GroupInfo_Offset
-  val element = this[arrayIndex]
-  this[arrayIndex] =
-    (element and ContainsMark_Mask.inv()) or (value.toBit() shl ContainsMark_Shift)
+  val groupInfoIndex = address * Group_Fields_Size + GroupInfo_Offset
+  this[groupInfoIndex] =
+    (this[groupInfoIndex] and ContainsMark_Mask.inv()) or (value.toBit() shl ContainsMark_Shift)
 }
 
-private inline fun IntArray.containsAnyMark(address: Int) =
-  this[address * Group_Fields_Size + GroupInfo_Offset] and (ContainsMark_Mask or Mark_Mask) != 0
+private inline fun IntArray.containsAnyMark(address: Int): Boolean =
+  groupInfo(address = address) and (ContainsMark_Mask or Mark_Mask) != 0
 
-private fun IntArray.auxIndex(address: Int) =
-  (address * Group_Fields_Size).let { slot ->
-    if (slot >= size) size
+private fun IntArray.auxIndex(address: Int): Int =
+  (address * Group_Fields_Size).let { groupIndex ->
+    if (groupIndex >= size) size
     else
-      this[slot + DataAnchor_Offset] +
-        countOneBits(this[slot + GroupInfo_Offset] shr (Aux_Shift + 1))
+      this[groupIndex + DataAnchor_Offset] +
+        // STUDY Aux_Shift에 1을 더하는 이유: (ChatGPT 설명)
+        //
+        //    `+1`을 하는 이유는 “현재 비트는 제외하고, 그 앞(상위) 비트들만”의 개수를 세기 위해서예요.
+        //
+        //    - `groupInfo`에는 슬롯을 차지할 수 있는 플래그들이 상위 비트부터 순서대로 들어가 있어요:
+        //      `n(30)`, `ks(29)`, `ds(28)` …
+        //    - 어떤 슬롯의 인덱스를 계산할 때는, 해당 슬롯의 시작 오프셋(= data anchor)에 “그 슬롯보다
+        //      앞에 올 수 있는 슬롯 개수”만 더해야 해요.
+        //    - 그래서 `shr(Shift + 1)`로 현재 슬롯의 비트는 우측 시프트로 날려 버리고, 더 높은 비트들만
+        //      남긴 뒤 `countOneBits(...)`로 그 개수만 합산합니다.
+        //
+        //    예시
+        //      - `auxIndex`: `shr(Aux_Shift + 1)` → `ds(28)` 자신은 제외되고, 앞선 `ks(29)`, `n(30)`만
+        //                                           집계 ⇒ aux 위치 = base + (n ? 1 : 0) + (ks ? 1 : 0).
+        //      - `objectKeyIndex`: `shr(ObjectKey_Shift + 1)` → `ks(29)` 자신은 제외되고, 앞선 `n(30)`만
+        //                                                       집계 ⇒ object key 위치 = base + (n ? 1 : 0).
+        //
+        //    만약 `+1`이 없다면 현재 비트까지 포함되어 오프셋이 1 크게 계산되는 오류가 납니다.
+        //
+        // 하지만 아직 이해 못함!
+        countOneBits(groupInfo(address = address) shr (Aux_Shift + 1))
   }
 
-private fun IntArray.slotAnchor(address: Int) =
-  (address * Group_Fields_Size).let { slot ->
-    this[slot + DataAnchor_Offset] + countOneBits(this[slot + GroupInfo_Offset] shr Slots_Shift)
-  }
+private fun IntArray.slotAnchor(address: Int): Int =
+  dataAnchor(address = address) + countOneBits(groupInfo(address = address) shr Slots_Shift)
 
-private inline fun countOneBits(value: Int) = value.countOneBits()
+private inline fun countOneBits(value: Int): Int = value.countOneBits()
 
 // Key access
-private inline fun IntArray.key(address: Int) = this[address * Group_Fields_Size]
+private inline fun IntArray.key(address: Int): Int =
+  this[address * Group_Fields_Size + Key_Offset]
 
-private fun IntArray.keys(len: Int = size) = slice(Key_Offset until len step Group_Fields_Size)
+private fun IntArray.keys(length: Int = size): List<Int> =
+  slice(Key_Offset until length step Group_Fields_Size)
 
 // Node count access
-private inline fun IntArray.nodeCount(address: Int) =
-  this[address * Group_Fields_Size + GroupInfo_Offset] and NodeCount_Mask
+private inline fun IntArray.nodeCount(address: Int): Int =
+  groupInfo(address = address) and NodeCount_Mask
 
 private fun IntArray.updateNodeCount(address: Int, value: Int) {
   @Suppress("ConvertTwoComparisonsToRangeCheck")
   debugRuntimeCheck(value >= 0 && value < NodeCount_Mask)
+
   this[address * Group_Fields_Size + GroupInfo_Offset] =
-    (this[address * Group_Fields_Size + GroupInfo_Offset] and NodeCount_Mask.inv()) or value
+    (groupInfo(address = address) and NodeCount_Mask.inv()) or value
 }
 
-private fun IntArray.nodeCounts(len: Int = size) =
-  slice(GroupInfo_Offset until len step Group_Fields_Size).fastMap { it and NodeCount_Mask }
+private fun IntArray.nodeCounts(length: Int = size): List<Int> =
+  slice(GroupInfo_Offset until length step Group_Fields_Size)
+    .fastMap { groupInfoSlot -> groupInfoSlot and NodeCount_Mask }
 
 // Parent anchor
-private inline fun IntArray.parentAnchor(address: Int) =
+private inline fun IntArray.parentAnchor(address: Int): Int =
   this[address * Group_Fields_Size + ParentAnchor_Offset]
 
 private inline fun IntArray.updateParentAnchor(address: Int, value: Int) {
   this[address * Group_Fields_Size + ParentAnchor_Offset] = value
 }
 
-private fun IntArray.parentAnchors(len: Int = size) =
-  slice(ParentAnchor_Offset until len step Group_Fields_Size)
+private fun IntArray.parentAnchors(length: Int = size): List<Int> =
+  slice(ParentAnchor_Offset until length step Group_Fields_Size)
 
 // Slot count access
-private fun IntArray.groupSize(address: Int) = this[address * Group_Fields_Size + Size_Offset]
+private fun IntArray.groupSize(address: Int): Int =
+  this[address * Group_Fields_Size + Size_Offset]
 
 private fun IntArray.updateGroupSize(address: Int, value: Int) {
   debugRuntimeCheck(value >= 0)
@@ -4007,154 +4036,217 @@ private fun IntArray.slice(indices: Iterable<Int>): List<Int> {
   return list
 }
 
-@Suppress("unused")
-private fun IntArray.groupSizes(len: Int = size) =
-  slice(Size_Offset until len step Group_Fields_Size)
+private fun IntArray.groupSizes(length: Int = size): List<Int> =
+  slice(Size_Offset until length step Group_Fields_Size)
 
 // Data anchor access
-private inline fun IntArray.dataAnchor(address: Int) =
+private inline fun IntArray.dataAnchor(address: Int): Int =
   this[address * Group_Fields_Size + DataAnchor_Offset]
 
 private inline fun IntArray.updateDataAnchor(address: Int, anchor: Int) {
   this[address * Group_Fields_Size + DataAnchor_Offset] = anchor
 }
 
-private fun IntArray.dataAnchors(len: Int = size) =
-  slice(DataAnchor_Offset until len step Group_Fields_Size)
+private fun IntArray.dataAnchors(length: Int = size): List<Int> =
+  slice(DataAnchor_Offset until length step Group_Fields_Size)
 
 // Update data
 private fun IntArray.initGroup(
   address: Int,
   key: Int,
   isNode: Boolean,
-  hasDataKey: Boolean,
-  hasData: Boolean,
+  hasObjectKey: Boolean, // 원래 이름: hasDataKey
+  hasAux: Boolean, // 원래 이름: hasData
   parentAnchor: Int,
   dataAnchor: Int,
 ) {
-  val arrayIndex = address * Group_Fields_Size
-  this[arrayIndex + Key_Offset] = key
+  val groupIndex = address * Group_Fields_Size
+
+  this[groupIndex + Key_Offset] = key
+
   // We turn each boolean into its corresponding bit field at the same time as we "or"
   // the fields together so we the generated aarch64 code can use left shifted operands
   // in the "orr" instructions directly.
-  this[arrayIndex + GroupInfo_Offset] =
+  //
+  // 각 boolean 값을 해당 비트 필드로 변환하면서 동시에 필드들을 OR 연산으로 합칩니다.
+  // 이렇게 하면 생성된 aarch64 코드가 orr 명령어에서 왼쪽 시프트된 피연산자를 직접
+  // 사용할 수 있습니다.
+  this[groupIndex + GroupInfo_Offset] =
     (isNode.toBit() shl NodeBit_Shift) or
-      (hasDataKey.toBit() shl ObjectKey_Shift) or
-      (hasData.toBit() shl Aux_Shift)
-  this[arrayIndex + ParentAnchor_Offset] = parentAnchor
-  this[arrayIndex + Size_Offset] = 0
-  this[arrayIndex + DataAnchor_Offset] = dataAnchor
+      (hasObjectKey.toBit() shl ObjectKey_Shift) or
+      (hasAux.toBit() shl Aux_Shift)
+
+  this[groupIndex + ParentAnchor_Offset] = parentAnchor
+  this[groupIndex + Size_Offset] = 0
+  this[groupIndex + DataAnchor_Offset] = dataAnchor
 }
 
-private inline fun Boolean.toBit() = if (this) 1 else 0
+private inline fun Boolean.toBit(): Int = if (this) 1 else 0
 
 private fun IntArray.updateGroupKey(address: Int, key: Int) {
-  val arrayIndex = address * Group_Fields_Size
-  this[arrayIndex + Key_Offset] = key
+  val groupIndex = address * Group_Fields_Size
+  this[groupIndex + Key_Offset] = key
 }
 
 private inline fun ArrayList<Anchor>.getOrAdd(
   index: Int,
   effectiveSize: Int,
-  block: () -> Anchor,
+  newAnchor: () -> Anchor,
 ): Anchor {
-  val location = search(index, effectiveSize)
+  val location = searchAnchorLocation(location = index, effectiveSize = effectiveSize)
   return if (location < 0) {
-    val anchor = block()
-    add(-(location + 1), anchor)
+    val anchor = newAnchor()
+    add(abs(location + 1), anchor)
     anchor
   } else get(location)
 }
 
 private fun ArrayList<Anchor>.find(index: Int, effectiveSize: Int): Anchor? {
-  val location = search(index, effectiveSize)
+  val location = searchAnchorLocation(location = index, effectiveSize = effectiveSize)
   return if (location >= 0) get(location) else null
 }
 
-/** This is inlined here instead to avoid allocating a lambda for the compare when this is used. */
-private fun ArrayList<Anchor>.search(location: Int, effectiveSize: Int): Int {
-  var low = 0
-  var high = size - 1
+/**
+ * This is inlined here instead to avoid allocating a lambda for the compare when
+ * this is used.
+ *
+ * 이 코드는 사용될 때 비교를 위한 람다를 할당하지 않도록 여기서 인라인 처리합니다.
+ */
+// 아마도 location는 그룹 위치겠지?
+//
+// MEMO 이진 탐색 알고리즘!!!
+//
+// MEMO @param effectiveSize
+//  > 앵커가 음수라면 배열 끝에서의 거리를 기록합니다.
+//  음수의 앵커 인덱스를 양수로 바꿀 때 사용되는 전체 그룹 배열의 사이즈
+//
+// 원래 이름: search
+private fun ArrayList<Anchor>.searchAnchorLocation(location: Int, effectiveSize: Int): Int {
+  var lowIndex = 0
+  var highIndex = lastIndex
 
-  while (low <= high) {
-    val mid = (low + high) ushr 1 // safe from overflows
-    val midVal = get(mid).location.let { if (it < 0) effectiveSize + it else it }
-    val cmp = midVal.compareTo(location)
+  while (lowIndex <= highIndex) {
+    // 'n / (2^k)' 는 'n shr k' 와 동일함. (n이 양수일 때만 해당, 수학적으로 원리는 아직 이해 못함!)
+    // 즉, 'n / 2' 는 'n shr 1' 과 동일함.
+    //
+    // 'lowIndex + highIndex' 연산에서 overflow가 발생하면 덧셈 결과는 음수가 됨.
+    // '음수 shr k' 로는 음수 값만 발생(shr는 MSB를 유지하며 shift 함)하므로, ushr로 'n / 2'를 진행함.
+    // (ushr는 MSB를 0으로 채우며 shift 함)
+    val midIndex = (lowIndex + highIndex) ushr 1 // safe from overflows
+    val midValue = get(midIndex).location.let { if (it < 0) effectiveSize + it else it }
 
+    @Suppress("KotlinConstantConditions")
     when {
-      cmp < 0 -> low = mid + 1
-      cmp > 0 -> high = mid - 1
-      else -> return mid // key found
+      midValue < location -> lowIndex = midIndex + 1
+      midValue == location -> return midIndex // key found
+      midValue > location -> highIndex = midIndex - 1
     }
   }
-  return -(low + 1) // key not found
+
+  return -(lowIndex + 1) // key not found
 }
 
 /**
- * A wrapper on [search] that always returns an index in to [this] even if [index] is not in the
- * array list.
+ * A wrapper on [searchAnchorLocation] that always returns an index in to [this] even if [index] is
+ * not in the array list.
+ *
+ * [searchAnchorLocation]의 결과를 감싸는 래퍼로, [index]가 배열 리스트에 없더라도 항상 [this] 안의
+ * 인덱스를 반환합니다.
  */
-private fun ArrayList<Anchor>.locationOf(index: Int, effectiveSize: Int) =
-  search(index, effectiveSize).let { if (it >= 0) it else -(it + 1) }
+private fun ArrayList<Anchor>.anchorLocationOf(index: Int, effectiveSize: Int): Int =
+  searchAnchorLocation(location = index, effectiveSize = effectiveSize)
+    .let { if (it >= 0) it else abs(it + 1) }
 
 /**
  * PropertySet implements a set which allows recording integers into a set an efficiently extracting
  * the greatest max value out of the set. It does this using the heap structure from a heap sort
  * that ensures that adding or removing a value is O(log N) operation even if values are repeatedly
  * added and removed.
+ *
+ * PropertySet은 정수를 집합에 기록하고, 그 집합에서 가장 큰 값을 효율적으로 추출할 수 있는 집합을
+ * 구현합니다. 이는 힙 정렬에서 사용하는 힙 구조를 통해 이루어지며, 값이 반복적으로 추가되거나
+ * 제거되더라도 추가나 제거 연산이 O(log N) 복잡도로 보장됩니다.
  */
+// 이진 탐색으로 구현되고, 가장 큰 값이 0번째 인덱스로 옴.
 @JvmInline
 internal value class PrioritySet(private val list: MutableIntList = mutableIntListOf()) {
-  // Add a value to the heap
+  // Add a value to the heap.
+  // 힙에 값을 추가합니다.
   fun add(value: Int) {
-    // Filter trivial duplicates
-    if (list.isNotEmpty() && (list[0] == value || list[list.size - 1] == value)) return
+    // Filter trivial duplicates. (trivial: 사소한, 하찮은)
+    // 사소한 중복을 걸러냅니다.
+    if (list.isNotEmpty() && (list.first() == value || list.last() == value))
+      return
 
-    var index = list.size
+    var insertingIndex = list.size
+
     list.add(value)
 
     // Shift the value up the heap.
-    while (index > 0) {
-      val parent = ((index + 1) ushr 1) - 1
+    // 값을 힙 위로 올립니다.
+    //
+    // 이진 탐색 구현 (왜 변수명이 parent 일까?)
+    while (insertingIndex > 0) {
+      val parent = ((insertingIndex + 1) ushr 1) - 1
       val parentValue = list[parent]
-      if (value > parentValue) {
-        list[index] = parentValue
-      } else break
-      index = parent
+
+      if (value > parentValue)
+        list[insertingIndex] = parentValue
+      else
+        break
+
+      insertingIndex = parent
     }
-    list[index] = value
+
+    list[insertingIndex] = value
   }
 
-  fun isEmpty() = list.isEmpty()
+  fun isEmpty(): Boolean = list.isEmpty()
 
-  fun isNotEmpty() = list.isNotEmpty()
+  fun isNotEmpty(): Boolean = list.isNotEmpty()
 
-  fun peek() = list.first()
+  fun peek(): Int = list.first()
 
-  // Remove a de-duplicated value from the heap
+  // Remove a de-duplicated value from the heap.
+  // 중복 제거된 값을 힙에서 제거합니다.
   fun takeMax(): Int {
     debugRuntimeCheck(list.size > 0) { "Set is empty" }
-    val value = list[0]
+
+    val value = list.first()
 
     // Skip duplicates. It is not time efficient to remove duplicates from the list while
     // adding so remove them when they leave the list. This also implies that the underlying
     // list's size is not an accurate size of the list so this set doesn't implement size.
     // If size is needed later consider de-duping on insert which might require companion map.
-    while (list.isNotEmpty() && list[0] == value) {
+    //
+    // 중복은 건너뜁니다. 추가하면서 리스트에서 중복을 제거하는 것은 시간 효율적이지 않으므로,
+    // 리스트에서 빠져나올 때 제거합니다. 따라서 내부 리스트의 크기는 실제 크기를 정확히 나타내지
+    // 않으며, 이 집합은 size를 구현하지 않습니다. 나중에 size가 필요하다면 삽입 시 중복 제거를
+    // 고려해야 하며, 이 경우 보조 맵이 필요할 수 있습니다.
+    while (list.isNotEmpty() && list.first() == value) {
       // Shift the last value down.
+      // 마지막 값을 아래로 내립니다.
       list[0] = list.last()
-      list.removeAt(list.size - 1)
+      list.removeAt(list.lastIndex)
+
       var index = 0
       val size = list.size
-      val max = list.size ushr 1
-      while (index < max) {
+      val maxIndex = size / 2
+
+      while (index < maxIndex) {
         val indexValue = list[index]
         val left = (index + 1) * 2 - 1
         val leftValue = list[left]
         val right = (index + 1) * 2
+
         if (right < size) {
           // Note: only right can exceed size because of the constraint on index being
-          // less than floor(list.size / 2)
+          // less than floor(list.size / 2).
+          //
+          // floor: 수 내림 (floor(7.6) -> 7)
+          //
+          // 인덱스가 floor(list.size / 2)보다 작아야 한다는 제약 때문에 size를 초과할
+          // 수 있는 것은 right뿐입니다.
           val rightValue = list[right]
           if (rightValue > leftValue) {
             if (rightValue > indexValue) {
@@ -4165,6 +4257,7 @@ internal value class PrioritySet(private val list: MutableIntList = mutableIntLi
             } else break
           }
         }
+
         if (leftValue > indexValue) {
           list[index] = leftValue
           list[left] = indexValue
@@ -4172,10 +4265,10 @@ internal value class PrioritySet(private val list: MutableIntList = mutableIntLi
         } else break
       }
     }
+
     return value
   }
 
-  @Suppress("ExceptionMessage")
   fun validateHeap() {
     val size = list.size
     for (index in 0 until size / 2) {
@@ -4193,6 +4286,13 @@ private fun MutableIntObjectMap<MutableIntSet>.add(key: Int, value: Int) {
   (this[key] ?: MutableIntSet().also { set(key, it) }).add(value)
 }
 
-internal fun throwConcurrentModificationException() {
+// This function exists so we do *not* inline the throw. It keeps
+// the call site much smaller and since it's the slow path anyway,
+// we don't mind the extra function call.
+//
+// 이 함수는 throw를 인라인하지 않기 위해 존재합니다. 이렇게 하면
+// 호출 지점이 훨씬 작아지고, 어차피 느린 경로이므로 함수 호출이
+// 추가되더라도 문제되지 않습니다.
+internal fun throwConcurrentModificationException(): Nothing {
   throw ConcurrentModificationException()
 }

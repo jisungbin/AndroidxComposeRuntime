@@ -21,7 +21,7 @@ import kotlin.contracts.contract
 
 // This function exists so we do *not* inline the throw. It keeps
 // the call site much smaller and since it's the slow path anyway,
-// we don't mind the extra function call
+// we don't mind the extra function call.
 internal fun throwIllegalArgumentException(message: String) {
   throw IllegalArgumentException(message)
 }

@@ -1436,7 +1436,7 @@ internal inline fun runtimeCheck(value: Boolean, lazyMessage: () -> String) {
   }
 }
 
-internal const val EnableDebugRuntimeChecks = false
+internal const val EnableDebugRuntimeChecks = true
 
 /**
  * A variation of [composeRuntimeError] that gets stripped from R8-minified builds. Use this for
@@ -1445,6 +1445,7 @@ internal const val EnableDebugRuntimeChecks = false
  * binary.
  */
 internal inline fun debugRuntimeCheck(value: Boolean, lazyMessage: () -> String) {
+  @Suppress("SimplifyBooleanWithConstants")
   if (EnableDebugRuntimeChecks && !value) {
     composeImmediateRuntimeError(lazyMessage())
   }
