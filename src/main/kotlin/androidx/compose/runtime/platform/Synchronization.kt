@@ -35,5 +35,5 @@ internal inline fun makeSynchronizedObject(ref: Any? = null): SynchronizedObject
 @PublishedApi
 internal inline fun <R> synchronized(lock: SynchronizedObject, block: () -> R): R {
   contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
-  return kotlin.synchronized(lock, block)
+  return kotlin.synchronized(lock = lock, block = block)
 }

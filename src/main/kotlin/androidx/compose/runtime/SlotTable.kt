@@ -160,11 +160,17 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
   /**
    * An array to store group information that is stored as groups of [Group_Fields_Size] elements
    * of the array. The [groups] array can be thought of as an array of an inline struct.
+   *
+   * 그룹 정보를 저장하기 위한 배열로, 배열의 [Group_Fields_Size] 요소 단위로 그룹이 저장됩니다.
+   * [groups] 배열은 인라인 구조체 배열로 볼 수 있습니다.
    */
   var groups = IntArray(0)
     private set
 
-  /** The number of groups contained in [groups]. */
+  /**
+   * The number of groups contained in [groups].
+   *  [groups]에 포함된 그룹의 개수입니다.
+   */
   var groupsSize = 0
     private set
 
@@ -173,45 +179,73 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * returned by [dataAnchor] of [groups] and continue to the next group's slots or to [slotsSize]
    * for the last group. When in a writer the [dataAnchor] is an anchor instead of an index as
    * [slots] might contain a gap.
+   *
+   * 그룹의 슬롯을 저장하는 배열입니다. 그룹의 슬롯 요소는 [groups]의 [dataAnchor]가 반환하는 오프셋에서
+   * 시작하여 다음 그룹의 슬롯까지, 마지막 그룹의 경우 [slotsSize]까지 이어집니다. writer 상태에서는
+   * [slots]에 gap이 있을 수 있으므로 [dataAnchor]는 인덱스가 아닌 앵커로 사용됩니다.
    */
   var slots = Array<Any?>(0) { null }
     private set
 
-  /** The number of slots used in [slots]. */
+  /**
+   * The number of slots used in [slots].
+   * [slots]에서 사용된 슬롯의 개수입니다.
+   */
   var slotsSize = 0
     private set
 
   /**
    * Tracks the number of active readers. A SlotTable can have multiple readers but only one
    * writer.
+   *
+   * 활성화된 리더의 수를 추적합니다. SlotTable은 여러 리더를 가질 수 있지만 작성자(writer)는
+   * 하나만 가질 수 있습니다.
    */
   private var readers = 0
 
   private val lock = makeSynchronizedObject()
 
-  /** Tracks whether there is an active writer. */
+  /**
+   * Tracks whether there is an active writer.
+   * 활성화된 writer가 있는지 여부를 추적합니다.
+   */
   internal var writer = false
     private set
 
   /**
    * An internal version that is incremented whenever a writer is created. This is used to detect
    * when an iterator created by [CompositionData] is invalid.
+   *
+   * writer가 생성될 때마다 증가하는 내부 버전입니다. 이는 [CompositionData]에 의해 생성된 iterator가
+   * 무효화되었는지를 감지하는 데 사용됩니다.
    */
   internal var version = 0
 
-  /** A list of currently active anchors. */
+  /**
+   * A list of currently active anchors.
+   * 현재 활성화된 앵커들의 목록입니다.
+   */
   internal var anchors: ArrayList<Anchor> = arrayListOf()
 
-  /** A map of source information to anchor. */
+  /**
+   * A map of source information to anchor.
+   * sourceInformation을 앵커에 매핑한 것입니다.
+   */
   internal var sourceInformationMap: HashMap<Anchor, GroupSourceInformation>? = null
 
   /**
    * A map of source marker numbers to their, potentially indirect, parent key. This is recorded
    * for LiveEdit to allow a function that doesn't itself have a group to be invalidated.
+   *
+   * 소스 마커 번호를 그들의 (간접적일 수 있는) 부모 키에 매핑한 것입니다. 이는 LiveEdit에서
+   * 그룹을 직접 가지지 않는 함수도 무효화될 수 있도록 기록됩니다.
    */
   internal var calledByMap: MutableIntObjectMap<MutableIntSet>? = null
 
-  /** Returns true if the slot table is empty */
+  /**
+   * Returns true if the slot table is empty.
+   * 슬롯 테이블이 비어 있으면 true를 반환합니다.
+   */
   override val isEmpty
     get() = groupsSize == 0
 
@@ -219,43 +253,54 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * Read the slot table in [block]. Any number of readers can be created but a slot table cannot
    * be read while it is being written to.
    *
+   * 슬롯 테이블을 [block]에서 읽습니다. 리더는 여러 개 생성될 수 있지만, 슬롯 테이블이 기록 중일
+   * 때는 읽을 수 없습니다.
+   *
    * @see SlotReader
    */
-  inline fun <T> read(block: (reader: SlotReader) -> T): T =
-    openReader().let { reader ->
-      try {
-        block(reader)
-      } finally {
-        reader.close()
-      }
+  inline fun <T> read(block: (reader: SlotReader) -> T): T {
+    val reader = openReader()
+    try {
+      return block(reader)
+    } finally {
+      reader.close()
     }
+  }
 
   /**
    * Write to the slot table in [block]. Only one writer can be created for a slot table at a time
    * and all readers must be closed an do readers can be created while the slot table is being
    * written to.
    *
+   * 슬롯 테이블을 [block]에서 기록합니다. 슬롯 테이블에는 한 번에 하나의 writer만 생성될 수 있으며,
+   * 모든 리더가 닫혀야 하고 작성 중에는 새로운 리더를 생성할 수 없습니다.
+   *
    * @see SlotWriter
    */
-  inline fun <T> write(block: (writer: SlotWriter) -> T): T =
-    openWriter().let { writer ->
-      var normalClose = false
-      try {
-        block(writer).also { normalClose = true }
-      } finally {
-        writer.close(normalClose)
-      }
+  inline fun <T> write(block: (writer: SlotWriter) -> T): T {
+    val writer = openWriter()
+    var normalClose = false
+    try {
+      return block(writer).also { normalClose = true }
+    } finally {
+      writer.close(normalClose)
     }
+  }
 
   /**
    * Open a reader. Any number of readers can be created but a slot table cannot be read while it
    * is being written to.
    *
+   * 리더를 엽니다. 리더는 여러 개 생성할 수 있지만, 슬롯 테이블이 기록 중일 때는 읽을 수 없습니다.
+   *
    * @see SlotReader
    */
   fun openReader(): SlotReader {
+    // writer가 대기 중일 때는 읽을 수 없습니다.
     if (writer) error("Cannot read while a writer is pending")
+
     readers++
+
     return SlotReader(table = this)
   }
 
@@ -263,13 +308,25 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * Open a writer. Only one writer can be created for a slot table at a time and all readers must
    * be closed an do readers can be created while the slot table is being written to.
    *
+   * writer를 엽니다. 슬롯 테이블에는 한 번에 하나의 writer만 생성할 수 있으며, 모든 리더가 닫혀야
+   * 하고 작성 중에는 새로운 리더를 생성할 수 없습니다.
+   *
    * @see SlotWriter
    */
   fun openWriter(): SlotWriter {
-    runtimeCheck(!writer) { "Cannot start a writer when another writer is pending" }
-    runtimeCheck(readers <= 0) { "Cannot start a writer when a reader is pending" }
+    runtimeCheck(!writer) {
+      // 다른 writer가 대기 중일 때는 writer를 시작할 수 없습니다.
+      "Cannot start a writer when another writer is pending"
+    }
+
+    runtimeCheck(readers <= 0) {
+      // 리더가 대기 중일 때는 writer를 시작할 수 없습니다.
+      "Cannot start a writer when a reader is pending"
+    }
+
     writer = true
     version++
+
     return SlotWriter(table = this)
   }
 
@@ -281,17 +338,44 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * If an anchor is moved using [SlotWriter.moveFrom] or [SlotWriter.moveTo] the anchor will move
    * to be owned by the receiving table. [ownsAnchor] can be used to determine if the group at
    * [index] is still in this table.
+   *
+   * 주어진 인덱스에 대한 앵커를 반환합니다. [SlotWriter]가 그룹을 삽입하거나 제거했거나 그룹 자체가
+   * 이동된 이후에는 [anchorIndex]를 사용하여 현재 [index] 위치의 그룹 인덱스를 확인할 수 있습니다.
+   * [index]의 그룹이 제거되었다면 [Anchor.valid]는 false를 반환합니다.
+   *
+   * 앵커가 [SlotWriter.moveFrom]이나 [SlotWriter.moveTo]로 이동되면 앵커는 수신 테이블에 속하게
+   * 됩니다. [ownsAnchor]를 사용하면 [index]의 그룹이 여전히 이 테이블에 속하는지 확인할 수 있습니다.
    */
   fun anchor(index: Int): Anchor {
-    runtimeCheck(!writer) { "use active SlotWriter to create an anchor location instead" }
-    requirePrecondition(index in 0 until groupsSize) { "Parameter index is out of range" }
-    return anchors.getOrAdd(index, groupsSize) { Anchor(index) }
+    runtimeCheck(!writer) {
+      // 대신 활성화된 SlotWriter를 사용하여 앵커 위치를 생성합니다.
+      "use active SlotWriter to create an anchor location instead"
+    }
+
+    requirePrecondition(index in 0 until groupsSize) {
+      // 매개변수 인덱스가 범위를 벗어났습니다.
+      "Parameter index is out of range"
+    }
+
+    return anchors.getOrAdd(index = index, effectiveSize = groupsSize) {
+      Anchor(location = index)
+    }
   }
 
-  /** Return an anchor to the given index if there is one already, null otherwise. */
+  /**
+   * Return an anchor to the given index if there is one already, null otherwise.
+   * 이미 존재한다면 주어진 인덱스에 대한 앵커를 반환하고, 그렇지 않으면 null을 반환합니다.
+   */
   private fun tryAnchor(index: Int): Anchor? {
-    runtimeCheck(!writer) { "use active SlotWriter to crate an anchor for location instead" }
-    return if (index in 0 until groupsSize) anchors.find(index, groupsSize) else null
+    runtimeCheck(!writer) {
+      // 대신 활성화된 SlotWriter를 사용하여 해당 위치에 대한 앵커를 생성하세요.
+      "use active SlotWriter to crate an anchor for location instead"
+    }
+
+    return if (index in 0 until groupsSize)
+      anchors.find(index = index, effectiveSize = groupsSize)
+    else
+      null
   }
 
   /**
@@ -299,10 +383,23 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * not validated. If [anchor] is not owned by this [SlotTable] the result is undefined. If a
    * [SlotWriter] is open the [SlotWriter.anchorIndex] must be called instead as [anchor] might be
    * affected by the modifications being performed by the [SlotWriter].
+   *
+   * [anchor]의 그룹 인덱스를 반환합니다. 이 [SlotTable]이 [anchor]를 소유한다고 가정하며, 이는
+   * 검증되지 않습니다. [anchor]가 이 [SlotTable]의 소유가 아니라면 결과는 정의되지 않습니다.
+   * [SlotWriter]가 열려 있다면 [SlotWriter]에 의해 수행 중인 수정의 영향을 받을 수 있으므로
+   * [SlotWriter.anchorIndex]를 대신 호출해야 합니다.
    */
   fun anchorIndex(anchor: Anchor): Int {
-    runtimeCheck(!writer) { "Use active SlotWriter to determine anchor location instead" }
-    requirePrecondition(anchor.valid) { "Anchor refers to a group that was removed" }
+    runtimeCheck(!writer) {
+      // 대신 활성화된 SlotWriter를 사용하여 앵커 위치를 결정하세요.
+      "Use active SlotWriter to determine anchor location instead"
+    }
+
+    requirePrecondition(anchor.valid) {
+      // 앵커가 제거된 그룹을 참조하고 있습니다.
+      "Anchor refers to a group that was removed"
+    }
+
     return anchor.location
   }
 
@@ -310,24 +407,33 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * Returns true if [anchor] is owned by this [SlotTable] or false if it is owned by a different
    * [SlotTable] or no longer part of this table (e.g. it was moved or the group it was an anchor
    * for was removed).
+   *
+   * [anchor]가 이 [SlotTable]에 속해 있다면 true를 반환하고, 다른 [SlotTable]에 속해 있거나 더
+   * 이상 이 테이블의 일부가 아니라면(예: 이동되었거나, 앵커가 가리키던 그룹이 제거된 경우) false를
+   * 반환합니다.
    */
-  fun ownsAnchor(anchor: Anchor): Boolean {
-    return anchor.valid &&
-      anchors.searchAnchorLocation(anchor.location, groupsSize).let { it >= 0 && anchors[it] == anchor }
-  }
+  fun ownsAnchor(anchor: Anchor): Boolean =
+    anchor.valid &&
+      anchors.searchAnchorLocation(location = anchor.location, effectiveSize = groupsSize).let { loc ->
+        loc >= 0 && anchors[loc] == anchor
+      }
 
   fun inGroup(groupAnchor: Anchor, anchor: Anchor): Boolean {
     val group = groupAnchor.location
-    val groupEnd = group + groups.groupSize(group)
+    val groupEnd = group + groups.groupSize(address = group)
     return anchor.location in group until groupEnd
   }
 
-  /** Returns true if the [anchor] is for the group at [groupIndex] or one of it child groups. */
+  /**
+   * Returns true if the [anchor] is for the group at [groupIndex] or one of it child groups.
+   * [anchor]가 [groupIndex]의 그룹이나 그 자식 그룹 중 하나를 가리키면 true를 반환합니다.
+   */
   fun groupContainsAnchor(groupIndex: Int, anchor: Anchor): Boolean {
     runtimeCheck(!writer) { "Writer is active" }
     runtimeCheck(groupIndex in 0 until groupsSize) { "Invalid group index" }
-    return ownsAnchor(anchor) &&
-      anchor.location in groupIndex until (groupIndex + groups.groupSize(groupIndex))
+
+    return ownsAnchor(anchor = anchor) &&
+      anchor.location in groupIndex until (groupIndex + groups.groupSize(address = groupIndex))
   }
 
   /** Close [reader]. */
@@ -351,8 +457,12 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
 
   /**
    * Close [writer] and adopt the slot arrays returned. The [SlotTable] is invalid until
-   * [SlotWriter.close] is called as the [SlotWriter] is modifying [groups] and [slots] directly
-   * and will only make copies of the arrays if the slot table grows.
+   * [SlotWriter.close] is called as the [SlotWriter] is modifying [groups] and [slots]
+   * directly and will only make copies of the arrays if the slot table grows.
+   *
+   * [writer]를 닫고 반환된 슬롯 배열을 적용합니다. [SlotWriter]가 [groups]와 [slots]를
+   * 직접 수정하므로 [SlotWriter.close]가 호출되기 전까지 [SlotTable]은 유효하지 않습니다.
+   * 슬롯 테이블이 커지는 경우에만 배열이 복사됩니다.
    */
   internal fun close(
     writer: SlotWriter,
@@ -366,12 +476,23 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
   ) {
     requirePrecondition(writer.table === this && this.writer) { "Unexpected writer close()" }
     this.writer = false
-    setTo(groups, groupsSize, slots, slotsSize, anchors, sourceInformationMap, calledByMap)
+    setTo(
+      groups = groups,
+      groupsSize = groupsSize,
+      slots = slots,
+      slotsSize = slotsSize,
+      anchors = anchors,
+      sourceInformationMap = sourceInformationMap,
+      calledByMap = calledByMap,
+    )
   }
 
   /**
    * Used internally by [SlotWriter.moveFrom] to swap arrays with a slot table target [SlotTable]
    * is empty.
+   *
+   * [SlotWriter.moveFrom]에서 내부적으로 사용되며, 대상 [SlotTable]이 비어 있을 때 배열을
+   * 교환합니다.
    */
   internal fun setTo(
     groups: IntArray,
@@ -382,7 +503,9 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     sourceInformationMap: HashMap<Anchor, GroupSourceInformation>?,
     calledByMap: MutableIntObjectMap<MutableIntSet>?,
   ) {
-    // Adopt the slots from the writer
+    // Adopt the slots from the writer.
+    // writer로부터 슬롯을 받아들입니다.
+
     this.groups = groups
     this.groupsSize = groupsSize
     this.slots = slots
@@ -403,6 +526,15 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    *
    * Returns a list of groups if they were successfully invalidated. If this returns null then a
    * full composition must be forced.
+   *
+   * 현재 슬롯 테이블을 수정하여, 대상 키를 가진 모든 그룹이 무효화되도록 합니다. 재구성 시 해당
+   * 그룹들의 콘텐츠는 dispose되고 다시 삽입됩니다.
+   *
+   * 이는 현재 Live Edit과 같은 개발자 도구에서만 사용되며, 동일한 구조를 더 이상 유지하지 않을
+   * 것으로 예상되는 그룹을 재구성 전에 제거하기 위해 사용됩니다.
+   *
+   * 성공적으로 무효화되면 그룹들의 목록을 반환합니다. null을 반환하면 전체 composition을 강제로
+   * 수행해야 합니다.
    */
   internal fun invalidateGroupsWithKey(target: Int): List<RecomposeScopeImpl>? {
     val anchors = mutableListOf<Anchor>()
@@ -413,16 +545,19 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
         it.add(target)
         it.add(LIVE_EDIT_INVALID_KEY)
       }
-    calledByMap?.get(target)?.let { set.addAll(it) }
 
-    // Invalidate groups with the target key
+    calledByMap?.get(target)?.let(set::addAll)
+
+    // Invalidate groups with the target key.
+    // 대상 키를 가진 그룹들을 무효화합니다.
     read { reader ->
       fun scanGroup() {
         val key = reader.groupKey
         if (key in set) {
           if (key != LIVE_EDIT_INVALID_KEY) anchors.add(reader.anchor())
+
           if (allScopesFound) {
-            val nearestScope = findEffectiveRecomposeScope(reader.currentGroup)
+            val nearestScope = findEffectiveRecomposeScope(group = reader.currentGroup)
             if (nearestScope != null) {
               scopes.add(nearestScope)
               if (nearestScope.anchor?.location == reader.currentGroup) {
@@ -430,33 +565,43 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
                 // cases, such as when the parameter names of a function change,
                 // the restart lambda can be invalid if it is called. To avoid this
                 // the scope parent scope needs to be invalidated too.
-                val parentScope = findEffectiveRecomposeScope(reader.parent)
-                parentScope?.let { scopes.add(it) }
+                //
+                // 재시작 그룹을 포함하는 그룹의 경우, 함수의 매개변수 이름이 바뀌는
+                // 등의 상황에서는 재시작 람다가 호출될 때 무효할 수 있습니다. 이를
+                // 피하기 위해 부모 스코프도 함께 무효화해야 합니다.
+                val parentScope = findEffectiveRecomposeScope(group = reader.parent)
+                parentScope?.let(scopes::add)
               }
             } else {
               allScopesFound = false
               scopes.clear()
             }
           }
+
           reader.skipGroup()
           return
         }
+
         reader.startGroup()
         while (!reader.isGroupEnd) {
           scanGroup()
         }
         reader.endGroup()
       }
+
       scanGroup()
     }
 
     // Bash groups even if we could not invalidate it. The call is responsible for ensuring
     // the group is recomposed when this happens.
+    //
+    // 무효화할 수 없는 경우에도 그룹을 강제로 무효화합니다. 이때 그룹이 다시 재구성되도록
+    // 보장하는 책임은 호출 측에 있습니다.
     write { writer ->
       writer.startGroup()
       anchors.fastForEach { anchor ->
-        if (anchor.toIndexFor(writer) >= writer.currentGroup) {
-          writer.seek(anchor)
+        if (anchor.toIndexFor(writer = writer) >= writer.currentGroup) {
+          writer.seek(anchor = anchor)
           writer.bashCurrentGroup()
         }
       }
@@ -467,10 +612,11 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     return if (allScopesFound) scopes else null
   }
 
-  /** Turns true if the first group (considered the root group) contains a mark. */
-  fun containsMark(): Boolean {
-    return groupsSize > 0 && groups.containsMark(0)
-  }
+  /**
+   * Turns true if the first group (considered the root group) contains a mark.
+   * 첫 번째 그룹(루트 그룹으로 간주됨)이 mark를 포함하면 true를 반환합니다.
+   */
+  fun containsMark(): Boolean = groupsSize > 0 && groups.containsMark(address = 0)
 
   fun sourceInformationOf(group: Int): GroupSourceInformation? =
     sourceInformationMap?.let { map -> tryAnchor(index = group)?.let(map::get) }
@@ -479,79 +625,131 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * Find the nearest recompose scope for [group] that, when invalidated, will cause [group] group
    * to be recomposed. This will force non-restartable recompose scopes in between this [group]
    * and the restartable group to recompose.
+   *
+   * [group]에 대해 가장 가까운 recompose scope를 찾아, 그것이 무효화될 때 [group]이 다시
+   * 재구성되도록 합니다. 이 과정에서 [group]과 restartable 그룹 사이에 있는
+   * non-restartable recompose scope들도 강제로 재구성됩니다.
    */
   private fun findEffectiveRecomposeScope(group: Int): RecomposeScopeImpl? {
     var current = group
     while (current > 0) {
-      for (data in DataIterator(this, current)) {
+      for (data in DataIterator(table = this, group = current)) {
         if (data is RecomposeScopeImpl) {
-          if (data.used && current != group) return data else data.forcedRecompose = true
+          if (data.used && current != group)
+            return data
+          else
+            data.forcedRecompose = true
         }
       }
-      current = groups.parentAnchor(current)
+
+      current = groups.parentAnchor(address = current)
     }
+
     return null
   }
 
   /**
    * A debugging aid to validate the internal structure of the slot table. Throws an exception if
    * the slot table is not in the expected shape.
+   *
+   * 슬롯 테이블의 내부 구조를 검증하기 위한 디버깅 도구입니다. 슬롯 테이블이 예상된 형태가 아니면
+   * 예외를 발생시킵니다.
    */
   fun verifyWellFormed() {
     // If the check passes Address and Index are identical so there is no need for
     // indexToAddress conversions.
+    //
+    // 검사가 통과되면 Address와 Index가 동일하므로 indexToAddress 변환이 필요하지 않습니다.
     var current = 0
+
     fun validateGroup(parent: Int, parentEnd: Int): Int {
       val group = current++
-      val parentIndex = groups.parentAnchor(group)
+      val parentIndex = groups.parentAnchor(address = group)
+
       checkPrecondition(parentIndex == parent) {
+        // $group에서 잘못된 부모 인덱스가 감지되었습니다. 예상된 부모 인덱스는 $parent인데,
+        // 실제로는 $parentIndex가 발견되었습니다.
         "Invalid parent index detected at $group, expected parent index to be $parent " +
           "found $parentIndex"
       }
-      val end = group + groups.groupSize(group)
+
+      val end = group + groups.groupSize(address = group)
+
       checkPrecondition(end <= groupsSize) {
+        // $group에서 그룹이 테이블 끝을 넘어섰습니다.
         "A group extends past the end of the table at $group"
       }
       checkPrecondition(end <= parentEnd) {
+        // $group에서 그룹이 부모 그룹을 넘어섰습니다.
         "A group extends past its parent group at $group"
       }
 
-      val dataStart = groups.dataAnchor(group)
-      val dataEnd = if (group >= groupsSize - 1) slotsSize else groups.dataAnchor(group + 1)
+      val dataStart = groups.dataAnchor(address = group)
+      val dataEnd =
+        if (group >= groupsSize - 1)
+          slotsSize
+        else
+          groups.dataAnchor(address = group + 1)
+
       checkPrecondition(dataEnd <= slots.size) {
+        // $group의 슬롯이 슬롯 테이블 끝을 넘어섰습니다.
         "Slots for $group extend past the end of the slot table"
       }
-      checkPrecondition(dataStart <= dataEnd) { "Invalid data anchor at $group" }
-      val slotStart = groups.slotAnchor(group)
-      checkPrecondition(slotStart <= dataEnd) { "Slots start out of range at $group" }
-      val minSlotsNeeded =
-        (if (groups.isNode(group)) 1 else 0) +
-          (if (groups.hasObjectKey(group)) 1 else 0) +
-          (if (groups.hasAux(group)) 1 else 0)
+      checkPrecondition(dataStart <= dataEnd) {
+        // $group에서 잘못된 데이터 앵커가 감지되었습니다.
+        "Invalid data anchor at $group"
+      }
+
+      val slotStart = groups.slotAnchor(address = group)
+
+      checkPrecondition(slotStart <= dataEnd) {
+        // $group에서 슬롯 시작이 범위를 벗어났습니다.
+        "Slots start out of range at $group"
+      }
+
+      val minSlotsNeeded: Int =
+        (if (groups.isNode(address = group)) 1 else 0) +
+          (if (groups.hasObjectKey(address = group)) 1 else 0) +
+          (if (groups.hasAux(address = group)) 1 else 0)
+
       checkPrecondition(dataEnd - dataStart >= minSlotsNeeded) {
+        // 그룹 $group에 대해 추가된 슬롯이 충분하지 않습니다.
         "Not enough slots added for group $group"
       }
-      val isNode = groups.isNode(group)
-      checkPrecondition(!isNode || slots[groups.nodeIndex(group)] != null) {
+
+      val isNode = groups.isNode(address = group)
+
+      checkPrecondition(value = !isNode || slots[groups.nodeIndex(address = group)] != null) {
+        // $group에서 노드 그룹에 대한 노드가 기록되지 않았습니다.
         "No node recorded for a node group at $group"
       }
+
       var nodeCount = 0
       while (current < end) {
-        nodeCount += validateGroup(group, end)
+        nodeCount += validateGroup(parent = group, parentEnd = end)
       }
-      val expectedNodeCount = groups.nodeCount(group)
-      val expectedSlotCount = groups.groupSize(group)
+
+      val expectedNodeCount = groups.nodeCount(address = group)
+      val expectedSlotCount = groups.groupSize(address = group)
+
       checkPrecondition(expectedNodeCount == nodeCount) {
+        //
         "Incorrect node count detected at $group, " +
           "expected $expectedNodeCount, received $nodeCount"
       }
+
       val actualSlotCount = current - group
+
       checkPrecondition(expectedSlotCount == actualSlotCount) {
+        // $group에서 잘못된 노드 개수가 감지되었습니다. 예상된 노드 개수는 $expectedNodeCount인데,
+        // 실제로는 $nodeCount가 확인되었습니다.
         "Incorrect slot count detected at $group, expected $expectedSlotCount, received " +
           "$actualSlotCount"
       }
-      if (groups.containsAnyMark(group)) {
-        checkPrecondition(group <= 0 || groups.containsMark(parent)) {
+
+      if (groups.containsAnyMark(address = group)) {
+        checkPrecondition(group <= 0 || groups.containsMark(address = parent)) {
+          // $group이 mark를 포함하므로, 그룹 $parent가 이를 포함한다고 기록되어야 합니다.
           "Expected group $parent to record it contains a mark because $group does"
         }
       }
@@ -561,53 +759,77 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
 
     if (groupsSize > 0) {
       while (current < groupsSize) {
-        validateGroup(-1, current + groups.groupSize(current))
+        validateGroup(
+          parent = -1,
+          parentEnd = current + groups.groupSize(address = current),
+        )
       }
+
       checkPrecondition(current == groupsSize) {
+        // 루트 $current에서 불완전한 그룹이 발견되었습니다. 예상된 크기는 $groupsSize입니다.
         "Incomplete group at root $current expected to be $groupsSize"
       }
     }
 
-    // Verify that slot gap contains all nulls
+    // Verify that slot gap contains all nulls.
+    // 슬롯 갭이 모두 null로 채워져 있는지 확인합니다.
     for (index in slotsSize until slots.size) {
       checkPrecondition(slots[index] == null) {
+        // 슬롯 갭의 인덱스 $index에서 null이 아닌 값이 발견되었습니다.
         "Non null value in the slot gap at index $index"
       }
     }
 
-    // Verify anchors are well-formed
+    // Verify anchors are well-formed.
+    // 앵커들이 올바르게 형성되어 있는지 확인합니다.
     var lastLocation = -1
+
     anchors.fastForEach { anchor ->
-      val location = anchor.toIndexFor(this)
+      val location = anchor.toIndexFor(slots = this)
+
       requirePrecondition(location in 0..groupsSize) {
+        // 잘못된 앵커입니다. 위치가 범위를 벗어났습니다.
         "Invalid anchor, location out of bound"
       }
-      requirePrecondition(lastLocation < location) { "Anchor is out of order" }
+      requirePrecondition(lastLocation < location) {
+        // 앵커의 순서가 올바르지 않습니다.
+        "Anchor is out of order"
+      }
+
       lastLocation = location
     }
 
-    // Verify source information is well-formed
+    // Verify source information is well-formed.
+    // 소스 정보가 올바르게 형성되어 있는지 확인합니다.
     fun verifySourceGroup(group: GroupSourceInformation) {
-      group.groups?.fastForEach { item ->
-        when (item) {
+      group.groups?.fastForEach { groupItem ->
+        when (groupItem) {
           is Anchor -> {
-            requirePrecondition(item.valid) { "Source map contains invalid anchor" }
-            requirePrecondition(ownsAnchor(item)) {
+            requirePrecondition(groupItem.valid) {
+              // 소스 맵에 잘못된 앵커가 포함되어 있습니다.
+              "Source map contains invalid anchor"
+            }
+            requirePrecondition(ownsAnchor(anchor = groupItem)) {
+              // 소스 맵 앵커가 슬롯 테이블에 속하지 않습니다.
               "Source map anchor is not owned by the slot table"
             }
           }
-          is GroupSourceInformation -> verifySourceGroup(item)
+          is GroupSourceInformation -> verifySourceGroup(group = groupItem)
         }
       }
     }
 
     sourceInformationMap?.let { sourceInformationMap ->
       for ((anchor, sourceGroup) in sourceInformationMap) {
-        requirePrecondition(anchor.valid) { "Source map contains invalid anchor" }
-        requirePrecondition(ownsAnchor(anchor)) {
+        requirePrecondition(anchor.valid) {
+          // 소스 맵에 잘못된 앵커가 포함되어 있습니다.
+          "Source map contains invalid anchor"
+        }
+        requirePrecondition(ownsAnchor(anchor = anchor)) {
+          // 소스 맵 앵커가 슬롯 테이블에 속하지 않습니다.
           "Source map anchor is not owned by the slot table"
         }
-        verifySourceGroup(sourceGroup)
+        verifySourceGroup(group = sourceGroup)
       }
     }
   }
@@ -623,73 +845,88 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
   /**
    * A debugging aid that renders the slot table as a string. [toString] is avoided as producing
    * this information is potentially a very expensive operation for large slot tables and calling
-   * this function in the debugger should never be implicit which it often is for [toString]
+   * this function in the debugger should never be implicit which it often is for [toString].
+   *
+   * 슬롯 테이블을 문자열로 렌더링하는 디버깅 도구입니다. 큰 슬롯 테이블에서는 이 정보를 생성하는 데
+   * 매우 많은 비용이 들 수 있으므로 [toString]은 피합니다. 또한 디버거에서 이 함수를 호출하는 것은
+   * [toString]처럼 암묵적으로 발생해서는 안 됩니다.
    */
   @Suppress("unused", "MemberVisibilityCanBePrivate")
-  fun toDebugString(): String {
-    return if (writer) super.toString()
-    else
-      buildString {
-        append(super.toString())
-        append('\n')
-        val groupsSize = groupsSize
-        if (groupsSize > 0) {
-          var current = 0
-          while (current < groupsSize) {
-            current += emitGroup(current, 0)
-          }
-        } else append("<EMPTY>")
-      }
-  }
+  fun toDebugString(): String =
+    if (writer) super.toString()
+    else buildString {
+      append(super.toString())
+      append('\n')
 
-  /** A helper function used by [toDebugString] to render a particular group. */
+      val groupsSize = groupsSize
+      if (groupsSize > 0) {
+        var current = 0
+        while (current < groupsSize) {
+          current += emitGroup(index = current, level = 0)
+        }
+      } else append("<EMPTY>")
+    }
+
+  /**
+   * A helper function used by [toDebugString] to render a particular group.
+   * [toDebugString]에서 특정 그룹을 렌더링하는 데 사용되는 보조 함수입니다.
+   */
   private fun StringBuilder.emitGroup(index: Int, level: Int): Int {
     repeat(level) { append(' ') }
     append("Group(")
     append(index)
     append(")")
-    sourceInformationOf(index)?.sourceInformation?.let {
-      if (it.startsWith("C(") || it.startsWith("CC(")) {
-        val start = it.indexOf("(") + 1
-        val endParen = it.indexOf(')')
+
+    sourceInformationOf(group = index)?.sourceInformation?.let { sourceInfo ->
+      if (sourceInfo.startsWith("C(") || sourceInfo.startsWith("CC(")) {
+        val start = sourceInfo.indexOf("(") + 1
+        val endParen = sourceInfo.indexOf(')')
         append(" ")
-        append(it.substring(start, endParen))
+        append(sourceInfo.substring(start, endParen))
         append("()")
       }
     }
-    append(" key=")
-    append(groups.key(index))
-    fun dataIndex(index: Int) = if (index >= groupsSize) slotsSize else groups.dataAnchor(index)
 
-    val groupSize = groups.groupSize(index)
+    append(" key=")
+    append(groups.key(address = index))
+
+    fun dataIndex(address: Int): Int =
+      if (address >= groupsSize) slotsSize else groups.dataAnchor(address = address)
+
+    val groupSize = groups.groupSize(address = index)
+
     append(", nodes=")
-    append(groups.nodeCount(index))
+    append(groups.nodeCount(address = index))
     append(", size=")
     append(groupSize)
-    if (groups.hasMark(index)) {
+
+    if (groups.hasMark(address = index)) {
       append(", mark")
     }
-    if (groups.containsMark(index)) {
+    if (groups.containsMark(address = index)) {
       append(", contains mark")
     }
-    val dataStart = dataIndex(index)
-    val dataEnd = dataIndex(index + 1)
+
+    val dataStart = dataIndex(address = index)
+    val dataEnd = dataIndex(address = index + 1)
     if (dataStart in 0..dataEnd && dataEnd <= slotsSize) {
-      if (groups.hasObjectKey(index)) {
+      if (groups.hasObjectKey(address = index)) {
         append(
           " objectKey=${
-            slots[
-              groups.objectKeyIndex(index)].toString().summarize(10)
+            slots[groups.objectKeyIndex(address = index)].toString().summarize(minSize = 10)
           }"
         )
       }
+
       if (groups.isNode(index)) {
-        append(" node=${slots[groups.nodeIndex(index)].toString().summarize(10)}")
+        append(" node=${slots[groups.nodeIndex(address = index)].toString().summarize(minSize = 10)}")
       }
+
       if (groups.hasAux(index)) {
-        append(" aux=${slots[groups.auxIndex(index)].toString().summarize(10)}")
+        append(" aux=${slots[groups.auxIndex(address = index)].toString().summarize(minSize = 10)}")
       }
-      val slotStart = groups.slotAnchor(index)
+
+      val slotStart = groups.slotAnchor(address = index)
       if (slotStart < dataEnd) {
         append(", slots=[")
         append(slotStart)
@@ -703,12 +940,15 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     } else {
       append(", *invalid data offsets $dataStart-$dataEnd*")
     }
+
     append('\n')
+
     var current = index + 1
     val end = index + groupSize
     while (current < end) {
-      current += emitGroup(current, level + 1)
+      current += emitGroup(index = current, level = level + 1)
     }
+
     return groupSize
   }
 
@@ -1268,8 +1508,8 @@ internal class SlotReader(
     "SlotReader(current=$currentGroup, key=$groupKey, parent=$parent, end=$currentEnd)"
 
   /** Create an anchor to the current reader location or [index]. */
-  fun anchor(index: Int = currentGroup) =
-    table.anchors.getOrAdd(index, groupsSize) { Anchor(index) }
+  fun anchor(index: Int = currentGroup): Anchor =
+    table.anchors.getOrAdd(index = index, effectiveSize = groupsSize) { Anchor(location = index) }
 
   private fun IntArray.node(index: Int) =
     if (isNode(index)) {
