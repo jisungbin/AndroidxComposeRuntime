@@ -3957,24 +3957,31 @@ private class SourceInformationGroupDataIterator(
     }
 }
 
-private val EmptyLongArray = LongArray(0)
+private val EmptyLongArray = LongArray(size = 0)
 
 internal class BitVector {
-  private var first: Long = 0
-  private var second: Long = 0
+  private var first: Long = 0L
+  private var second: Long = 0L
   private var others: LongArray = EmptyLongArray
 
+  // 저장된 전체 비트 개수
   val size: Int
+    // other는 0개일 수 있지만, first/second는 항상 존재하므로 +2를 함.
+    // Long은 64개의 비트를 저장함.
     get() = (others.size + 2) * 64
 
   operator fun get(index: Int): Boolean {
     if (index < 64) return first and (1L shl index) != 0L
     if (index < 128) return second and (1L shl (index - 64)) != 0L
 
+
+    // 128 이상의 인덱스는 others에서 관리
+
     val others = others
     val size = others.size
     if (size == 0) return false
 
+    // 128 / 64 = 2 이므로, 2를 빼줌.
     val address = (index / 64) - 2
     if (address >= size) return false
 
@@ -3999,6 +4006,7 @@ internal class BitVector {
     val newIndex = index % 64
     val mask = 1L shl newIndex
     var others = others
+
     if (address >= others.size) {
       others = others.copyOf(newSize = address + 1)
       this.others = others
@@ -4008,18 +4016,21 @@ internal class BitVector {
     others[address] = (bits and mask.inv()) or (value.toBit().toLong() shl newIndex)
   }
 
-  fun nextSet(index: Int): Int = nextBit(index) { it }
+  // index 부터(이상) 시작하여 먼저 나오는 1 비트의 위치를 반환함
+  fun nextSet(index: Int): Int =
+    nextBit(index = index, valueSelector = { it })
 
-  fun nextClear(index: Int): Int = nextBit(index) { it.inv() }
+  // index 부터(이상) 시작하여 먼저 나오는 0 비트의 위치를 반환함
+  fun nextClear(index: Int): Int =
+    nextBit(index = index, valueSelector = { it.inv() })
 
   /**
    * Returns the index of the next bit in this bit vector, starting at index. The [valueSelector]
    * lets the caller modify the value before finding its first bit set.
    *
-   * 이 비트 벡터에서 지정한 인덱스부터 시작하여 다음 비트의 인덱스를 반환합니다. [valueSelector]를
-   * 사용하면 호출자가 값을 수정한 뒤 그 안에서 첫 번째로 설정된 비트를 찾을 수 있습니다.
+   * 이 비트 벡터에서 index부터 시작하여 다음 1 비트의 인덱스를 반환합니다. [valueSelector]를
+   * 사용하면 호출자가 첫 번째로 1인 비트를 찾기 전에 값을 수정할 수 있습니다.
    */
-  @Suppress("NAME_SHADOWING")
   private inline fun nextBit(index: Int, valueSelector: (Long) -> Long): Int {
     if (index < 64) {
       // We shift right (unsigned) then back left to drop the first "index"
@@ -4027,8 +4038,8 @@ internal class BitVector {
       // performed by [firstBitSet] will start at index.
       //
       // 오른쪽으로 부호 없는 시프트를 한 뒤 다시 왼쪽으로 시프트하여 처음
-      // “index” 비트들을 제거합니다. 이렇게 하면 해당 비트들이 모두 0이 되어,
-      // [firstBitSet]의 탐색이 index에서 시작됨을 보장합니다.
+      // “index” 전 비트들을 제거합니다. 이렇게 하면 index 까지의 비트들이 모두
+      // 0이 되어, [firstBitSet]의 탐색이 index에서 시작됨을 보장합니다.
       val bit = (valueSelector(first) ushr index shl index).firstBitSet
       if (bit < 64) return bit
     }
@@ -4065,7 +4076,7 @@ internal class BitVector {
     return Int.MAX_VALUE
   }
 
-  @Suppress("NAME_SHADOWING")
+  // start..end 범위의 비트를 1로 설정함
   fun setRange(start: Int, end: Int) {
     var start = start
 
@@ -4076,10 +4087,14 @@ internal class BitVector {
     // 범위가 유효하다면 마스크로 ~0L을 사용하여 아래에서 1로 채워진 비트를 만듭니다.
     // 그렇지 않다면 비트를 설정하지 않도록 0을 사용합니다. start가 end 이상일 때 바로
     // 반환할 수도 있지만, 이는 흔한 경우가 아니므로 분기 처리는 생략합니다.
+    //
+    // -1L은 모든 비트가 1인 Long임
     val bits = if (start < end) -1L else 0L
 
     // Set the bits to 0 if we don't need to set any bit in the first word.
     // 첫 번째 워드에서 비트를 설정할 필요가 없으면 해당 비트들을 0으로 설정합니다.
+    //
+    // start가 64보다 클 때만 selector는 0이 됨. 아니라면 항상 -1.
     var selector = bits * (start < 64).toBit()
 
     // Take our selector (either all 0s or all 1s), perform an unsigned shift to the
@@ -4087,10 +4102,24 @@ internal class BitVector {
     // left to where the range begins. This lets us set up to 64 bits at a time without
     // doing an expensive loop that calls set().
     //
-    // 선택자(모두 0이거나 모두 1)를 오른쪽으로 부호 없는 시프트하여 "clampedEnd - start"
+    // selector(모두 0이거나 모두 1)를 오른쪽으로 부호 없는 시프트하여 "clampedEnd - start"
     // 비트를 가진 새로운 워드를 만든 뒤, 범위가 시작되는 위치로 다시 왼쪽 시프트합니다.
-    // 이렇게 하면 set()을 반복 호출하는 비싼 루프 없이 한 번에 최대 64비트를 설정할 수 있습니다.
-    val firstValue = (selector ushr (64 - (min(64, end) - start))) shl start
+    // 이렇게 하면 set()을 반복 호출하는 비싼 루프 없이 한 번에 최대 64비트를 설정할 수
+    // 있습니다.
+    //
+    // MEMO 비트마스킹 마법 대박이당...
+    //  https://github.com/jisungbin/JvmPlayground/blob/b4470d23945148cc5970a69afc084901d327a30c/src/main/kotlin/main.kt
+    val firstValue = (
+      // 필요한 만큼만 1 비트를 준비하고..
+      selector ushr (
+        // 실제로 설정해야 하는 비트까지의 시프팅 거리 계산
+        64 -
+          // 실제로 설정해야 하는 비트 수 계산
+          (min(64, end) - start)
+        )
+
+      // 1 비트가 시작되어야 할 곳으로 시프팅
+      ) shl start
 
     first = first or firstValue
 
@@ -4102,6 +4131,8 @@ internal class BitVector {
 
     // Set the bits to 0 if we don't need to set any bit in the second word.
     // 두 번째 워드에서 비트를 설정할 필요가 없으면 해당 비트들을 0으로 설정합니다.
+    //
+    // start가 128보다 클 때만 selector는 0이 됨. 아니라면 항상 -1.
     selector = bits * (start < 128).toBit()
 
     // See firstValue above.
@@ -4134,6 +4165,7 @@ internal class BitVector {
     }
 }
 
+// 여기서 set은 자료구조 Set이 아니라 1로 설정된 비트를 의미함
 private val Long.firstBitSet: Int
   inline get() = countTrailingZeroBits()
 
