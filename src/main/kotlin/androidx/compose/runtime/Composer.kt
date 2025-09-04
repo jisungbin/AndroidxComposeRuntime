@@ -1068,6 +1068,9 @@ sealed interface Composer {
      * A special value used to represent no value was stored (e.g. an empty slot). This is
      * returned, for example by [Composer.rememberedValue] while it is [Composer.inserting] is
      * `true`.
+     *
+     * 값이 저장되지 않았음을 나타내는 특수 값입니다(예: 비어 있는 슬롯). 예를 들어 [Composer.inserting]이
+     * true일 때 [Composer.rememberedValue]가 이 값을 반환합니다.
      */
     val Empty: Any =
       object {

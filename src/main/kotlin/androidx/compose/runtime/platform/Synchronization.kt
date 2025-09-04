@@ -26,6 +26,10 @@ internal typealias SynchronizedObject = Any
  * Returns [ref] as a [SynchronizedObject] on platforms where [Any] is a valid [SynchronizedObject],
  * or a new [SynchronizedObject] instance if [ref] is null or this is not supported on the current
  * platform.
+ *
+ * [ref]를 [SynchronizedObject]로 반환합니다. 단, [Any]가 유효한 [SynchronizedObject]인 플랫폼에서만
+ * 그렇게 동작합니다. [ref]가 null이거나 현재 플랫폼에서 지원되지 않는 경우에는 새로운
+ * [SynchronizedObject] 인스턴스를 반환합니다.
  */
 @Suppress("NOTHING_TO_INLINE")
 internal inline fun makeSynchronizedObject(ref: Any? = null): SynchronizedObject =

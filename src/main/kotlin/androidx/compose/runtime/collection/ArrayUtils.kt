@@ -17,8 +17,11 @@
 package androidx.compose.runtime.collection
 
 /**
- * Equivalent of Array.copyInto() with an implementation designed to avoid unnecessary null checks
- * and exception throws on Android after inlining.
+ * Equivalent of Array.copyInto() with an implementation designed to avoid
+ * unnecessary null checks and exception throws on Android after inlining.
+ *
+ * Array.copyInto()와 동등하며, 인라인 이후 Android에서 불필요한 null 검사와
+ * 예외 발생을 피하도록 설계된 구현입니다.
  */
 internal fun <T> Array<out T>.fastCopyInto(
   destination: Array<T>,

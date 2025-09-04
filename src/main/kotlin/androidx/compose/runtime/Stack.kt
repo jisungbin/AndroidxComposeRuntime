@@ -71,15 +71,15 @@ internal class IntStack {
     return if (index >= 0) slots[index] else default
   }
 
-  fun peek() = slots[tos - 1]
+  fun peek(): Int = slots[tos - 1]
 
-  fun peek2() = slots[tos - 2]
+  fun peek2(): Int = slots[tos - 2]
 
-  fun peek(index: Int) = slots[index]
+  fun peek(index: Int): Int = slots[index]
 
-  inline fun isEmpty() = tos == 0
+  inline fun isEmpty(): Boolean = tos == 0
 
-  inline fun isNotEmpty() = tos != 0
+  inline fun isNotEmpty(): Boolean = tos != 0
 
   fun clear() {
     tos = 0

@@ -246,7 +246,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * Returns true if the slot table is empty.
    * 슬롯 테이블이 비어 있으면 true를 반환합니다.
    */
-  override val isEmpty
+  override val isEmpty: Boolean
     get() = groupsSize == 0
 
   /**
@@ -349,6 +349,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
   fun anchor(index: Int): Anchor {
     runtimeCheck(!writer) {
       // 대신 활성화된 SlotWriter를 사용하여 앵커 위치를 생성합니다.
+      // (기존에 활성화된 writer가 있는 경우에 해당)
       "use active SlotWriter to create an anchor location instead"
     }
 
@@ -385,7 +386,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * affected by the modifications being performed by the [SlotWriter].
    *
    * [anchor]의 그룹 인덱스를 반환합니다. 이 [SlotTable]이 [anchor]를 소유한다고 가정하며, 이는
-   * 검증되지 않습니다. [anchor]가 이 [SlotTable]의 소유가 아니라면 결과는 정의되지 않습니다.
+   * 검증되지 않습니다. [anchor]가 이 [SlotTable]의 소유가 아니라면 결과는 undefined 입니다.
    * [SlotWriter]가 열려 있다면 [SlotWriter]에 의해 수행 중인 수정의 영향을 받을 수 있으므로
    * [SlotWriter.anchorIndex]를 대신 호출해야 합니다.
    */
@@ -421,6 +422,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
   fun inGroup(groupAnchor: Anchor, anchor: Anchor): Boolean {
     val group = groupAnchor.location
     val groupEnd = group + groups.groupSize(address = group)
+
     return anchor.location in group until groupEnd
   }
 
@@ -442,7 +444,9 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     sourceInformationMap: HashMap<Anchor, GroupSourceInformation>?,
   ) {
     runtimeCheck(reader.table === this && readers > 0) { "Unexpected reader close()" }
+
     readers--
+
     if (sourceInformationMap != null) {
       synchronized(lock) {
         val thisMap = this.sourceInformationMap
@@ -475,7 +479,9 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     calledByMap: MutableIntObjectMap<MutableIntSet>?,
   ) {
     requirePrecondition(writer.table === this && this.writer) { "Unexpected writer close()" }
+
     this.writer = false
+
     setTo(
       groups = groups,
       groupsSize = groupsSize,
@@ -526,6 +532,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    *
    * Returns a list of groups if they were successfully invalidated. If this returns null then a
    * full composition must be forced.
+   *
    *
    * 현재 슬롯 테이블을 수정하여, 대상 키를 가진 모든 그룹이 무효화되도록 합니다. 재구성 시 해당
    * 그룹들의 콘텐츠는 dispose되고 다시 삽입됩니다.
@@ -1025,34 +1032,57 @@ internal class GroupSourceInformation(
   var closed = false
   var dataEndOffset: Int = 0
 
-  fun startGrouplessCall(key: Int, sourceInformation: String, dataOffset: Int) {
-    openInformation().add(GroupSourceInformation(key, sourceInformation, dataOffset))
+  // Return the current open nested source information or this.
+  // 현재 열려 있는 중첩 sourceInformation을 반환하거나, 없으면 this를 반환합니다.
+  private fun openInformation(): GroupSourceInformation =
+    (groups?.let { groups ->
+      groups.fastLastOrNull { it is GroupSourceInformation && !it.closed }
+    }
+      as? GroupSourceInformation)?.openInformation() ?: this
+
+  fun startGrouplessCall(
+    key: Int,
+    sourceInformation: String,
+    dataOffset: Int,
+  ) {
+    openInformation().add(
+      group = GroupSourceInformation(
+        key = key,
+        sourceInformation = sourceInformation,
+        dataStartOffset = dataOffset,
+      ),
+    )
   }
 
   fun endGrouplessCall(dataOffset: Int) {
-    openInformation().close(dataOffset)
+    openInformation().close(dataOffset = dataOffset)
   }
 
   fun reportGroup(writer: SlotWriter, group: Int) {
-    openInformation().add(writer.anchor(group))
+    openInformation().add(group = writer.anchor(index = group))
   }
 
   fun reportGroup(table: SlotTable, group: Int) {
-    openInformation().add(table.anchor(group))
+    openInformation().add(group = table.anchor(index = group))
   }
 
   fun addGroupAfter(writer: SlotWriter, predecessor: Int, group: Int) {
     val groups = groups ?: ArrayList<Any>().also { groups = it }
     val index =
       if (predecessor >= 0) {
-        val anchor = writer.tryAnchor(predecessor)
+        val anchor = writer.tryAnchor(group = predecessor)
         if (anchor != null) {
-          groups.fastIndexOf {
-            it == anchor || (it is GroupSourceInformation && it.hasAnchor(anchor))
+          groups.fastIndexOf { group ->
+            group == anchor ||
+              (group is GroupSourceInformation && group.hasAnchor(anchor = anchor))
           }
         } else 0
       } else 0
-    groups.add(index, writer.anchor(group))
+
+    groups.add(
+      /* index = */ index,
+      /* element = */ writer.anchor(index = group),
+    )
   }
 
   fun close(dataOffset: Int) {
@@ -1060,44 +1090,43 @@ internal class GroupSourceInformation(
     dataEndOffset = dataOffset
   }
 
-  // Return the current open nested source information or this.
-  private fun openInformation(): GroupSourceInformation =
-    (groups?.let { groups ->
-      groups.fastLastOrNull { it is GroupSourceInformation && !it.closed }
-    } as? GroupSourceInformation)
-      ?.openInformation() ?: this
-
   private fun add(group: Any /* Anchor | GroupSourceInformation */) {
-    val groups = groups ?: ArrayList()
-    this.groups = groups
+    val groups = groups ?: ArrayList<Any>().also { this.groups = it }
     groups.add(group)
   }
 
   private fun hasAnchor(anchor: Anchor): Boolean =
-    groups?.fastAny {
-      it == anchor || (it is GroupSourceInformation && it.hasAnchor(anchor))
+    groups?.fastAny { group ->
+      group == anchor ||
+        (group is GroupSourceInformation && group.hasAnchor(anchor = anchor))
     } == true
 
   fun removeAnchor(anchor: Anchor): Boolean {
     val groups = groups
+
     if (groups != null) {
-      var index = groups.size - 1
+      var index = groups.lastIndex
+
       while (index >= 0) {
         when (val item = groups[index]) {
           is Anchor -> if (item == anchor) groups.removeAt(index)
           is GroupSourceInformation ->
-            if (!item.removeAnchor(anchor)) {
+            if (!item.removeAnchor(anchor = anchor)) {
               groups.removeAt(index)
             }
         }
+
         index--
       }
+
       if (groups.isEmpty()) {
         this.groups = null
         return false
       }
+
       return true
     }
+
     return true
   }
 }
@@ -1527,9 +1556,11 @@ internal class SlotReader(
     } else null
 }
 
-/** Information about groups and their keys. */
-internal class KeyInfo
-internal constructor(
+/**
+ * Information about groups and their keys.
+ * 그룹과 그 키에 대한 정보입니다.
+ */
+internal class KeyInfo(
   /** The group key. */
   val key: Int,
 
@@ -1539,79 +1570,151 @@ internal constructor(
   /** The location of the group. */
   val location: Int,
 
-  /** The number of nodes in the group. If the group is a node this is always 1. */
+  /**
+   * The number of nodes in the group. If the group is a node this is always 1.
+   *
+   * 그룹에 있는 노드의 개수입니다. 그룹이 노드라면 항상 1입니다.
+   */
   val nodes: Int,
 
-  /** The index of the key info in the list returned by extractKeys */
+  /**
+   * The index of the key info in the list returned by extractKeys.
+   *
+   * extractKeys가 반환한 리스트에서 키 정보의 인덱스입니다.
+   */
   val index: Int,
 )
 
 /** The writer for a slot table. See [SlotTable] for details. */
 internal class SlotWriter(
-  /** The [SlotTable] for whom this is writer. */
+  /**
+   * The [SlotTable] for whom this is writer.
+   *
+   * 이 writer가 속한 [SlotTable]입니다.
+   */
   internal val table: SlotTable,
 ) {
   /**
    * The gap buffer for groups. This might change as groups are inserted and the array needs to be
    * expanded to account groups. The current valid groups occupy 0 until [groupGapStart] followed
-   * [groupGapStart] + [groupGapLen] until groups.size where [groupGapStart] until
+   * [groupGapStart] + [groupGapLen] until `groups.size` where [groupGapStart] until
    * [groupGapStart] + [groupGapLen] is the gap.
+   *
+   * 그룹을 위한 갭 버퍼입니다. 그룹이 삽입되면 변경될 수 있으며, 배열은 그룹을 수용하기 위해 확장될
+   * 수 있습니다. 현재 유효한 그룹은 0부터 [groupGapStart] 전까지와 '[groupGapStart] + [groupGapLen]'부터
+   * `groups.size`까지 차지하며, [groupGapStart]부터 '[groupGapStart] + [groupGapLen]'까지가 gap입니다.
    */
   private var groups: IntArray = table.groups
 
   /**
    * The gap buffer for the slots. This might change as slots are inserted an and the array needs
    * to be expanded to account for the new slots. The current valid slots occupy 0 until
-   * [slotsGapStart] and [slotsGapStart] + [slotsGapLen] until slots.size where [slotsGapStart]
+   * [slotsGapStart] and [slotsGapStart] + [slotsGapLen] until `slots.size` where [slotsGapStart]
    * until [slotsGapStart] + [slotsGapLen] is the gap.
+   *
+   * 슬롯을 위한 갭 버퍼입니다. 슬롯이 삽입되면 변경될 수 있으며, 배열은 새로운 슬롯을 수용하기 위해
+   * 확장될 수 있습니다. 현재 유효한 슬롯은 0부터 [slotsGapStart] 전까지와 '[slotsGapStart] + [slotsGapLen]'부터
+   * `slots.size`까지 차지하며, [slotsGapStart]부터 '[slotsGapStart] + [slotsGapLen]'까지는 gap입니다.
    */
   private var slots: Array<Any?> = table.slots
 
-  /** A copy of the [SlotTable.anchors] to avoid having to index through [table]. */
+  /**
+   * A copy of the [SlotTable.anchors] to avoid having to index through [table].
+   *
+   * [SlotTable.anchors]의 복사본으로, [table]을 통해 인덱싱하지 않도록 하기 위함입니다.
+   */
   private var anchors: ArrayList<Anchor> = table.anchors
 
-  /** A copy of [SlotTable.sourceInformationMap] to avoid having to index through [table] */
-  private var sourceInformationMap = table.sourceInformationMap
+  /**
+   * A copy of [SlotTable.sourceInformationMap] to avoid having to index through [table].
+   *
+   * [SlotTable.sourceInformationMap]의 복사본으로, [table]을 통해 인덱싱하지 않도록 하기 위함입니다.
+   */
+  private var sourceInformationMap: HashMap<Anchor, GroupSourceInformation>? = table.sourceInformationMap
 
-  /** A copy of [SlotTable.calledByMap] to avoid having to index through [table] */
-  private var calledByMap = table.calledByMap
+  /**
+   * A copy of [SlotTable.calledByMap] to avoid having to index through [table].
+   *
+   * [SlotTable.calledByMap]의 복사본으로, [table]을 통해 인덱싱하지 않도록 하기 위함입니다.
+   */
+  private var calledByMap: MutableIntObjectMap<MutableIntSet>? = table.calledByMap
 
-  /** Group index of the start of the gap in the groups array. */
+  /**
+   * Group index of the start of the gap in the groups array.
+   *
+   * groups 배열에서 gap이 시작되는 그룹 인덱스입니다.
+   */
   private var groupGapStart: Int = table.groupsSize
 
-  /** The number of groups in the gap in the groups array. */
+  /**
+   * The number of groups in the gap in the groups array.
+   *
+   * groups 배열에서 gap에 있는 그룹의 개수입니다.
+   */
   private var groupGapLen: Int = groups.size / Group_Fields_Size - table.groupsSize
 
-  /** The location of the [slots] array that contains the data for the [parent] group. */
-  private var currentSlot = 0
+  /**
+   * The location of the [slots] array that contains the data for the [parent] group.
+   *
+   * [slots] 배열에서 [parent] 그룹의 데이터를 포함하는 위치입니다.
+   */
+  private var currentSlot: Int = 0
 
-  /** The location of the index in [slots] after the slots for the [parent] group. */
-  private var currentSlotEnd = 0
+  /**
+   * The location of the index in [slots] after the slots for the [parent] group.
+   *
+   * [slots] 배열에서 [parent] 그룹의 슬롯 이후 인덱스 위치입니다.
+   */
+  private var currentSlotEnd: Int = 0
 
-  /** The is the index of gap in the [slots] array. */
+  /**
+   * The is the index of gap in the [slots] array.
+   *
+   * [slots] 배열에서 gap의 인덱스입니다.
+   */
   private var slotsGapStart: Int = table.slotsSize
 
-  /** The number of slots in the gop in the [slots] array. */
+  /**
+   * The number of slots in the gop in the [slots] array.
+   *
+   * [slots] 배열에서 gap에 있는 슬롯의 개수입니다.
+   */
   private var slotsGapLen: Int = slots.size - table.slotsSize
 
-  /** The owner of the gap is the first group that has a end relative index. */
-  private var slotsGapOwner = table.groupsSize
+  /**
+   * The owner of the gap is the first group that has a end relative index.
+   *
+   * gap의 소유자는 end relative index를 가진 첫 번째 그룹입니다.
+   */
+  private var slotsGapOwner: Int = table.groupsSize
 
-  /** The number of times [beginInsert] has been called. */
-  private var insertCount = 0
+  /**
+   * The number of times [beginInsert] has been called.
+   *
+   * [beginInsert]가 호출된 횟수입니다.
+   */
+  private var insertCount: Int = 0
 
   /**
    * The number of nodes in the current group. Used to track when nodes are being added and
    * removed in the [parent] group. Once [endGroup] is called, if the nodes count has changed, the
    * containing groups are updated until a node group is encountered.
+   *
+   * 현재 그룹에 있는 노드의 개수입니다. [parent] 그룹에서 노드가 추가되거나 제거될 때 이를 추적하는 데
+   * 사용됩니다. [endGroup]이 호출되었을 때 노드 개수가 변경되었다면, 노드 그룹을 만날 때까지 포함하는
+   * 그룹들이 갱신됩니다.
    */
-  private var nodeCount = 0
+  private var nodeCount: Int = 0
 
   /**
    * A stack of the groups that have been explicitly started. A group can be implicitly started by
    * using [seek] to seek to indirect child and calling [startGroup] on that child. The groups
    * implicitly started groups will be updated when the [endGroup] is called for the indirect
    * child group.
+   *
+   * 명시적으로 시작된 그룹들의 스택입니다. 그룹은 [seek]를 사용하여 간접 자식으로 이동한 뒤
+   * 해당 자식에 대해 [startGroup]을 호출함으로써 암시적으로 시작될 수도 있습니다. 암시적으로
+   * 시작된 그룹들은 간접 자식 그룹에 대해 [endGroup]이 호출될 때 갱신됩니다.
    */
   private val startStack = IntStack()
 
@@ -1620,135 +1723,247 @@ internal class SlotWriter(
    * ended by calling [endGroup], the size of the group might have changed. This stack is a stack
    * of enc group anchors where will reflect the group size change when it is restored by calling
    * [restoreCurrentGroupEnd].
+   *
+   * [startStack]에 해당하는 그룹의 [currentGroupEnd]를 담는 스택입니다. 그룹은 [endGroup] 호출로
+   * 종료되며, 이때 그룹의 크기가 변경될 수 있습니다. 이 스택은 그룹 종료 앵커들의 스택으로,
+   * [restoreCurrentGroupEnd]를 호출해 복원할 때 그룹 크기 변경이 반영됩니다.
    */
   private val endStack = IntStack()
 
-  /** This a count of the [nodeCount] of the explicitly started groups. */
+  /**
+   * This a count of the [nodeCount] of the explicitly started groups.
+   *
+   * 명시적으로 시작된 그룹들의 [nodeCount] 합계입니다.
+   */
   private val nodeCountStack = IntStack()
 
   /**
    * Deferred slot writes for open groups to avoid thrashing the slot table when slots are added
    * to parent group which already has children.
+   *
+   * 이미 자식이 있는 부모 그룹에 슬롯이 추가될 때 슬롯 테이블이 불필요하게 뒤섞이는 것을 방지하기
+   * 위해, 열린 그룹들에 대해 슬롯 쓰기를 지연시킵니다.
    */
   private var deferredSlotWrites: MutableIntObjectMap<MutableObjectList<Any?>>? = null
 
-  /** The current group that will be started by [startGroup] or skipped by [skipGroup] */
-  var currentGroup = 0
+  /**
+   * The current group that will be started by [startGroup] or skipped by [skipGroup].
+   *
+   * [startGroup]에 의해 시작되거나 [skipGroup]에 의해 건너뛰어질 현재 그룹입니다.
+   */
+  var currentGroup: Int = 0
     private set
 
-  /** The index end of the current group. */
-  var currentGroupEnd = table.groupsSize
+  /**
+   * The index end of the current group.
+   *
+   * 현재 그룹의 끝 인덱스입니다.
+   */
+  var currentGroupEnd: Int = table.groupsSize
     private set
 
-  /** True if at the end of a group and an [endGroup] is expected. */
-  val isGroupEnd
+  /**
+   * True if at the end of a group and an [endGroup] is expected.
+   *
+   * 그룹의 끝에 도달하여 [endGroup]이 호출되어야 하면 true입니다.
+   */
+  val isGroupEnd: Boolean
     get() = currentGroup == currentGroupEnd
 
-  val slotsSize
+  val slotsSize: Int
     get() = slots.size - slotsGapLen
 
   /**
    * Return true if the current slot starts a node. A node is a kind of group so this will return
    * true for isGroup as well.
+   *
+   * 현재 슬롯이 노드를 시작하면 true를 반환합니다. 노드는 그룹의 한 종류이므로, isGroup인 경우에도
+   * true를 반환합니다.
    */
-  val isNode
-    get() = currentGroup < currentGroupEnd && groups.isNode(groupIndexToAddress(currentGroup))
+  val isNode: Boolean
+    get() =
+      currentGroup < currentGroupEnd &&
+        groups.isNode(address = groupIndexToAddress(index = currentGroup))
 
-  /** Returns true if the writer is collecting source information */
-  val collectingSourceInformation
+  /**
+   * Returns true if the writer is collecting source information.
+   *
+   * writer가 소스 정보를 수집 중이면 true를 반환합니다.
+   */
+  val collectingSourceInformation: Boolean
     get() = sourceInformationMap != null
 
-  /** Returns true if the writer is collecting called by information */
-  val collectingCalledInformation
+  /**
+   * Returns true if the writer is collecting called by information.
+   *
+   *  writer가 호출자(called by) 정보를 수집 중이면 true를 반환합니다.
+   */
+  val collectingCalledInformation: Boolean
     get() = calledByMap != null
 
-  /** Return true if the group at [index] is a node. */
-  fun isNode(index: Int) = groups.isNode(groupIndexToAddress(index))
+  /**
+   * Return true if the group at [index] is a node.
+   *
+   * [index]에 있는 그룹이 노드이면 true를 반환합니다.
+   */
+  fun isNode(index: Int): Boolean =
+    groups.isNode(address = groupIndexToAddress(index = index))
 
-  /** return the number of nodes contained in the group at [index] */
-  fun nodeCount(index: Int) = groups.nodeCount(groupIndexToAddress(index))
+  /**
+   * return the number of nodes contained in the group at [index].
+   *
+   * [index]에 있는 그룹에 포함된 노드의 개수를 반환합니다.
+   */
+  fun nodeCount(index: Int): Int =
+    groups.nodeCount(address = groupIndexToAddress(index = index))
 
-  /** Return the key for the group at [index]. */
-  fun groupKey(index: Int): Int = groups.key(groupIndexToAddress(index))
+  /**
+   * Return the key for the group at [index].
+   *
+   * [index]에 있는 그룹의 키를 반환합니다.
+   */
+  fun groupKey(index: Int): Int =
+    groups.key(address = groupIndexToAddress(index = index))
 
-  /** Return the object key for the group at [index], if it has one, or null if not. */
+  /**
+   * Return the object key for the group at [index], if it has one, or null if not.
+   *
+   * [index]에 있는 그룹의 객체 키를 반환합니다. 객체 키가 없으면 null을 반환합니다.
+   */
   fun groupObjectKey(index: Int): Any? {
-    val address = groupIndexToAddress(index)
-    return if (groups.hasObjectKey(address)) slots[groups.objectKeyIndex(address)] else null
+    val address = groupIndexToAddress(index = index)
+
+    return if (groups.hasObjectKey(address = address))
+      slots[groups.objectKeyIndex(address = address)]
+    else
+      null
   }
 
-  /** Return the size of the group at [index]. */
-  fun groupSize(index: Int): Int = groups.groupSize(groupIndexToAddress(index))
+  /**
+   * Return the size of the group at [index].
+   *
+   * [index]에 있는 그룹의 크기를 반환합니다.
+   */
+  fun groupSize(index: Int): Int =
+    groups.groupSize(address = groupIndexToAddress(index = index))
 
-  /** Return the aux of the group at [index]. */
+  /**
+   * Return the aux of the group at [index].
+   *
+   * [index]에 있는 그룹의 aux를 반환합니다.
+   */
   fun groupAux(index: Int): Any? {
-    val address = groupIndexToAddress(index)
-    return if (groups.hasAux(address)) slots[groups.auxIndex(address)] else Composer.Empty
+    val address = groupIndexToAddress(index = index)
+
+    return if (groups.hasAux(address = address))
+      slots[groups.auxIndex(address = address)]
+    else
+      Composer.Empty
   }
 
   @Suppress("ConvertTwoComparisonsToRangeCheck")
   fun indexInParent(index: Int): Boolean =
     index > parent && index < currentGroupEnd || (parent == 0 && index == 0)
 
-  fun indexInCurrentGroup(index: Int): Boolean = indexInGroup(index, currentGroup)
+  fun indexInCurrentGroup(index: Int): Boolean =
+    indexInGroup(index = index, group = currentGroup)
 
-  @Suppress("ConvertTwoComparisonsToRangeCheck")
   fun indexInGroup(index: Int, group: Int): Boolean {
     // If the group is open then the group size in the groups array has not been updated yet
     // so calculate the end from the stored anchor value in the end stack.
+    //
+    // 그룹이 열려 있다면 groups 배열의 그룹 크기가 아직 갱신되지 않았으므로, end 스택에 저장된
+    // 앵커 값에서 끝 위치를 계산합니다.
     val end =
       when {
         group == parent -> currentGroupEnd
-        group > startStack.peekOr(0) -> group + groupSize(group)
+        group > startStack.peekOr(default = 0) -> group + groupSize(index = group)
         else -> {
           val openIndex = startStack.indexOf(group)
           when {
-            openIndex < 0 -> group + groupSize(group)
-            else -> (capacity - groupGapLen) - endStack.peek(openIndex)
+            openIndex < 0 -> group + groupSize(index = group)
+            else -> (capacity - groupGapLen) - endStack.peek(index = openIndex)
           }
         }
       }
+
+    @Suppress("ConvertTwoComparisonsToRangeCheck")
     return index > group && index < end
   }
 
-  /** Return the node at [index] if [index] is a node group or null. */
+  /**
+   * Return the node at [index] if [index] is a node group or null.
+   *
+   * [index]가 노드 그룹이면 해당 노드를 반환하고, 아니면 null을 반환합니다.
+   */
   fun node(index: Int): Any? {
-    val address = groupIndexToAddress(index)
-    return if (groups.isNode(address)) slots[dataIndexToDataAddress(groups.nodeIndex(address))]
-    else null
+    val address = groupIndexToAddress(index = index)
+
+    return if (groups.isNode(address = address))
+      slots[dataIndexToDataAddress(dataIndex = groups.nodeIndex(address = address))]
+    else
+      null
   }
 
-  /** Return the node at [anchor] if it is a node group or null. */
-  fun node(anchor: Anchor) = node(anchor.toIndexFor(this))
+  /**
+   * Return the node at [anchor] if it is a node group or null.
+   *
+   * [anchor]가 노드 그룹이면 해당 노드를 반환하고, 아니면 null을 반환합니다.
+   */
+  fun node(anchor: Anchor): Any? =
+    node(index = anchor.toIndexFor(writer = this))
 
-  /** Return the index of the nearest group that contains [currentGroup]. */
+  /**
+   * Return the index of the nearest group that contains [currentGroup].
+   *
+   * [currentGroup]를 포함하는 가장 가까운 그룹의 인덱스를 반환합니다.
+   */
   var parent: Int = -1
     private set
 
-  /** Return the index of the parent for the group at [index]. */
-  fun parent(index: Int) = groups.parent(index)
+  /**
+   * Return the index of the parent for the group at [index].
+   *
+   * [index]에 있는 그룹의 부모 인덱스를 반환합니다.
+   */
+  fun parent(index: Int): Int = groups.parent(index = index)
 
   /**
-   * Return the index of the parent for the group referenced by [anchor]. If the anchor is not
-   * valid it returns -1.
+   * Return the index of the parent for the group referenced by [anchor]. If the anchor
+   * is not valid it returns -1.
+   *
+   * [anchor]가 참조하는 그룹의 부모 인덱스를 반환합니다. 앵커가 유효하지 않으면 -1을
+   * 반환합니다.
    */
-  fun parent(anchor: Anchor) = if (anchor.valid) groups.parent(anchorIndex(anchor)) else -1
+  fun parent(anchor: Anchor): Int =
+    if (anchor.valid)
+      groups.parent(index = anchorIndex(anchor = anchor))
+    else
+      -1
 
-  /** True if the writer has been closed */
-  var closed = false
+  /**
+   * True if the writer has been closed.
+   *
+   * writer가 닫혔으면 true입니다.
+   */
+  var closed: Boolean = false
     private set
 
-  /** Close the writer */
+  /** Close the writer. */
   fun close(normalClose: Boolean) {
     closed = true
-    // Ensure, for readers, there is no gap
+
+    // Ensure, for readers, there is no gap.
+    // 리더의 경우 gap이 없도록 보장합니다.
     if (normalClose && startStack.isEmpty()) {
       // Only reset the writer if it closes normally.
-      moveGroupGapTo(size)
-      moveSlotGapTo(slots.size - slotsGapLen, groupGapStart)
+      // writer가 정상적으로 종료될 때만 writer를 리셋합니다.
+      moveGroupGapTo(index = size)
+      moveSlotGapTo(index = slots.size - slotsGapLen, group = groupGapStart)
       clearSlotGap()
       recalculateMarks()
     }
+
     table.close(
       writer = this,
       groups = groups,
@@ -1765,109 +1980,170 @@ internal class SlotWriter(
    * Reset the writer to the beginning of the slot table and in the state as if it had just been
    * opened. This differs form closing a writer and opening a new one in that the instance doesn't
    * change and the gap in the slots are not reset to the end of the buffer.
+   *
+   * writer를 슬롯 테이블의 시작으로 리셋하고, 마치 새로 열렸을 때와 같은 상태로 되돌립니다.
+   * 이는 writer를 닫고 새로 여는 것과 달리 인스턴스가 바뀌지 않으며, 슬롯의 gap도 버퍼 끝으로
+   * 초기화되지 않습니다.
    */
   fun reset() {
     runtimeCheck(insertCount == 0) { "Cannot reset when inserting" }
     recalculateMarks()
     currentGroup = 0
-    currentGroupEnd = capacity - groupGapLen
+    currentGroupEnd = size
     currentSlot = 0
     currentSlotEnd = 0
     nodeCount = 0
   }
 
   /**
-   * Set the value of the next slot. Returns the previous value of the slot or [Composer.Empty] is
-   * being inserted.
+   * Set the value of the next slot. Returns the previous value of the slot or
+   * [Composer.Empty] is being inserted.
+   *
+   * 다음 슬롯의 값을 설정합니다. 이전 슬롯의 값을 반환하거나, 새로 삽입되는 경우
+   * [Composer.Empty]를 반환합니다.
    */
   fun update(value: Any?): Any? {
     if (insertCount > 0 && currentSlot != slotsGapStart) {
       // Defer write as doing it now would thrash the slot table.
+      // 지금 즉시 쓰기를 수행하면 슬롯 테이블이 불필요하게 뒤섞이므로, 쓰기를 지연합니다.
       val deferred =
-        (deferredSlotWrites ?: MutableIntObjectMap())
-          .also { deferredSlotWrites = it }
+        (deferredSlotWrites
+          ?: (MutableIntObjectMap<MutableObjectList<Any?>>().also { deferredSlotWrites = it }))
           .getOrPut(parent) { MutableObjectList() }
       deferred.add(value)
+
       return Composer.Empty
     }
-    return rawUpdate(value)
+
+    return rawUpdate(value = value)
   }
 
   private fun rawUpdate(value: Any?): Any? {
     val result = skip()
-    set(value)
+    set(value = value)
     return result
   }
 
-  /** Append a slot to the [parent] group. */
+  /**
+   * Append a slot to the [parent] group.
+   *
+   * [parent] 그룹에 슬롯을 추가합니다.
+   */
   fun appendSlot(anchor: Anchor, value: Any?) {
-    runtimeCheck(insertCount == 0) { "Can only append a slot if not current inserting" }
+    runtimeCheck(insertCount == 0) {
+      // 현재 삽입 중이 아닐 때만 슬롯을 추가할 수 있습니다.
+      "Can only append a slot if not current inserting"
+    }
+
     var previousCurrentSlot = currentSlot
     var previousCurrentSlotEnd = currentSlotEnd
-    val anchorIndex = anchorIndex(anchor)
-    val slotIndex = groups.dataIndex(groupIndexToAddress(anchorIndex + 1))
+    val anchorIndex = anchorIndex(anchor = anchor)
+    val slotIndex = groups.dataIndex(address = groupIndexToAddress(index = anchorIndex + 1))
+
     currentSlot = slotIndex
     currentSlotEnd = slotIndex
-    insertSlots(1, anchorIndex)
+    insertSlots(size = 1, group = anchorIndex)
+
     if (previousCurrentSlot >= slotIndex) {
       previousCurrentSlot++
       previousCurrentSlotEnd++
     }
+
     slots[slotIndex] = value
     currentSlot = previousCurrentSlot
     currentSlotEnd = previousCurrentSlotEnd
   }
 
+  // trim -> remove
   fun trimTailSlots(count: Int) {
     runtimeCheck(count > 0)
+
     val parent = parent
-    val groupSlotStart = groups.slotIndex(groupIndexToAddress(parent))
-    val groupSlotEnd = groups.dataIndex(groupIndexToAddress(parent + 1))
+    val groupSlotStart = groups.slotIndex(address = groupIndexToAddress(index = parent))
+    val groupSlotEnd = groups.dataIndex(address = groupIndexToAddress(index = parent + 1))
     val removeStart = groupSlotEnd - count
+
     runtimeCheck(removeStart >= groupSlotStart)
-    removeSlots(removeStart, count, parent)
+
+    removeSlots(
+      start = removeStart,
+      len = count,
+      group = parent,
+    )
+
     val currentSlot = currentSlot
     if (currentSlot >= groupSlotStart) {
       this.currentSlot = currentSlot - count
     }
   }
 
-  /** Updates the data for the current data group. */
+  /**
+   * Updates the data for the current data group.
+   *
+   * 현재 데이터 그룹의 데이터를 갱신합니다.
+   */
   fun updateAux(value: Any?) {
-    val address = groupIndexToAddress(currentGroup)
-    runtimeCheck(groups.hasAux(address)) {
+    val address = groupIndexToAddress(index = currentGroup)
+
+    runtimeCheck(groups.hasAux(address = address)) {
+      // 데이터 슬롯으로 생성되지 않은 그룹의 데이터를 갱신하려고 했습니다.
       "Updating the data of a group that was not created with a data slot"
     }
-    slots[dataIndexToDataAddress(groups.auxIndex(address))] = value
+
+    slots[dataIndexToDataAddress(dataIndex = groups.auxIndex(address = address))] = value
   }
 
   /**
-   * Insert aux data into the parent group.
+   * Insert aux data into the parent group. This must be done only after at most one
+   * value has been inserted into the slot table for the group.
    *
-   * This must be done only after at most one value has been inserted into the slot table for the
-   * group.
+   * 부모 그룹에 aux 데이터를 삽입합니다. 이는 그룹의 슬롯 테이블에 최대 한 개의
+   * 값만 삽입된 이후에만 수행해야 합니다.
    */
   fun insertAux(value: Any?) {
-    runtimeCheck(insertCount >= 0) { "Cannot insert auxiliary data when not inserting" }
+    runtimeCheck(insertCount >= 0) {
+      // 삽입 중이 아닐 때는 auxiliary 데이터를 넣을 수 없습니다.
+      "Cannot insert auxiliary data when not inserting"
+    }
+
     val parent = parent
-    val parentGroupAddress = groupIndexToAddress(parent)
-    runtimeCheck(!groups.hasAux(parentGroupAddress)) { "Group already has auxiliary data" }
-    insertSlots(1, parent)
-    val auxIndex = groups.auxIndex(parentGroupAddress)
-    val auxAddress = dataIndexToDataAddress(auxIndex)
+    val parentGroupAddress = groupIndexToAddress(index = parent)
+
+    runtimeCheck(!groups.hasAux(address = parentGroupAddress)) {
+      // 그룹에 이미 auxiliary 데이터가 있습니다.
+      "Group already has auxiliary data"
+    }
+
+    insertSlots(size = 1, group = parent)
+
+    val auxIndex = groups.auxIndex(address = parentGroupAddress)
+    val auxAddress = dataIndexToDataAddress(dataIndex = auxIndex)
+
+    // 최대 3개의 aux를 지원하는 듯?
     if (currentSlot > auxIndex) {
       // One or more values were inserted into the slot table before the aux value, we need
       // to move them. Currently we only will run into one or two slots (the recompose
       // scope inserted by a restart group and the lambda value in a composableLambda
       // instance) so this is the only case currently supported.
+      //
+      // aux 값보다 앞서 하나 이상의 값이 슬롯 테이블에 삽입된 경우 이를 이동해야 합니다.
+      // 현재는 하나 또는 두 개의 슬롯(restart group이 삽입한 recomposeScope와 composableLambda
+      // 인스턴스의 람다 값)만 발생할 수 있으며, 이 경우만 지원됩니다.
       val slotsToMove = currentSlot - auxIndex
-      checkPrecondition(slotsToMove < 3) { "Moving more than two slot not supported" }
+
+      checkPrecondition(slotsToMove < 3) {
+        // 두 개를 초과하는 슬롯 이동은 지원하지 않습니다.
+        "Moving more than two slot not supported"
+      }
+
       if (slotsToMove > 1) {
         slots[auxAddress + 2] = slots[auxAddress + 1]
       }
+
       slots[auxAddress + 1] = slots[auxAddress]
     }
-    groups.addAux(parentGroupAddress)
+
+    groups.addAux(address = parentGroupAddress)
     slots[auxAddress] = value
     currentSlot++
   }
@@ -1877,196 +2153,323 @@ internal class SlotWriter(
     this.calledByMap = table.calledByMap
   }
 
-  fun recordGroupSourceInformation(sourceInformation: String) {
-    if (insertCount > 0) {
-      groupSourceInformationFor(parent, sourceInformation)
-    }
-  }
-
-  fun recordGrouplessCallSourceInformationStart(key: Int, value: String) {
-    if (insertCount > 0) {
-      calledByMap?.add(key, groupKey(parent))
-      groupSourceInformationFor(parent, null)
-        ?.startGrouplessCall(key, value, currentGroupSlotIndex)
-    }
-  }
-
-  fun recordGrouplessCallSourceInformationEnd() {
-    if (insertCount > 0) {
-      groupSourceInformationFor(parent, null)?.endGrouplessCall(currentGroupSlotIndex)
-    }
-  }
-
   private fun groupSourceInformationFor(
     parent: Int,
     sourceInformation: String?,
   ): GroupSourceInformation? =
-    sourceInformationMap?.getOrPut(anchor(parent)) {
-      val result = GroupSourceInformation(0, sourceInformation, 0)
+    sourceInformationMap?.getOrPut(anchor(index = parent)) {
+      val result =
+        GroupSourceInformation(
+          key = 0,
+          sourceInformation = sourceInformation,
+          dataStartOffset = 0,
+        )
 
       // If we called from a groupless call then the groups added before this call
       // are not reflected in this group information so they need to be added now
       // if they exist.
+      //
+      // 그룹이 없는 호출에서 실행된 경우, 이 호출 전에 추가된 그룹들은 현재 그룹
+      // 정보에 반영되지 않으므로 존재한다면 지금 추가해야 합니다.
       if (sourceInformation == null) {
         var child = parent + 1
         val end = currentGroup
+
         while (child < end) {
-          result.reportGroup(this, child)
-          child += groups.groupSize(child)
+          result.reportGroup(writer = this, group = child)
+          child += groups.groupSize(address = child)
         }
       }
 
       result
     }
 
-  /** Updates the node for the current node group to [value]. */
-  fun updateNode(value: Any?) = updateNodeOfGroup(currentGroup, value)
-
-  /** Update the node of a the group at [anchor] to [value]. */
-  fun updateNode(anchor: Anchor, value: Any?) = updateNodeOfGroup(anchor.toIndexFor(this), value)
-
-  /** Updates the node of the parent group. */
-  fun updateParentNode(value: Any?) = updateNodeOfGroup(parent, value)
-
-  /** Set the value at the groups current data slot */
-  fun set(value: Any?) {
-    runtimeCheck(currentSlot <= currentSlotEnd) { "Writing to an invalid slot" }
-    slots[dataIndexToDataAddress(currentSlot - 1)] = value
+  fun recordGroupSourceInformation(sourceInformation: String) {
+    if (insertCount > 0) {
+      groupSourceInformationFor(parent = parent, sourceInformation = sourceInformation)
+    }
   }
 
-  /** Set the group's slot at [index] to [value]. Returns the previous value. */
-  inline fun set(index: Int, value: Any?): Any? = set(currentGroup, index, value)
+  fun recordGrouplessCallSourceInformationStart(key: Int, value: String) {
+    if (insertCount > 0) {
+      calledByMap?.add(key = key, value = groupKey(index = parent))
 
-  /** Convert a slot group index into a global slot index. */
+      groupSourceInformationFor(parent = parent, sourceInformation = null)
+        ?.startGrouplessCall(
+          key = key,
+          sourceInformation = value,
+          dataOffset = currentGroupSlotIndex,
+        )
+    }
+  }
+
+  fun recordGrouplessCallSourceInformationEnd() {
+    if (insertCount > 0) {
+      groupSourceInformationFor(parent = parent, sourceInformation = null)
+        ?.endGrouplessCall(dataOffset = currentGroupSlotIndex)
+    }
+  }
+
+  /**
+   * Updates the node for the current node group to [value].
+   *
+   * 현재 노드 그룹의 노드를 [value]로 갱신합니다.
+   */
+  fun updateNode(value: Any?) {
+    updateNodeOfGroup(index = currentGroup, value = value)
+  }
+
+  /**
+   * Update the node of a the group at [anchor] to [value].
+   *
+   * [anchor]에 있는 그룹의 노드를 [value]로 갱신합니다.
+   */
+  fun updateNode(anchor: Anchor, value: Any?) {
+    updateNodeOfGroup(
+      index = anchor.toIndexFor(writer = this),
+      value = value,
+    )
+  }
+
+  /**
+   * Updates the node of the parent group.
+   *
+   * 부모 그룹의 노드를 갱신합니다.
+   */
+  fun updateParentNode(value: Any?) {
+    updateNodeOfGroup(index = parent, value = value)
+  }
+
+  /**
+   * Set the value at the groups current data slot.
+   *
+   * 그룹의 현재 데이터 슬롯에 값을 설정합니다.
+   */
+  fun set(value: Any?) {
+    runtimeCheck(currentSlot <= currentSlotEnd) { "Writing to an invalid slot" }
+    slots[dataIndexToDataAddress(dataIndex = currentSlot - 1)] = value
+  }
+
+  /**
+   * Set the group's slot at [index] to [value]. Returns the previous value.
+   *
+   * 그룹의 [index] 슬롯을 [value]로 설정합니다. 이전 값을 반환합니다.
+   */
+  inline fun set(index: Int, value: Any?): Any? =
+    set(
+      group = currentGroup,
+      index = index,
+      value = value,
+    )
+
+  /**
+   * Set the [group] slot at [index] to [value]. Returns the previous value.
+   *
+   * [group]의 [index] 슬롯을 [value]로 설정합니다. 이전 값을 반환합니다.
+   */
+  fun set(group: Int, index: Int, value: Any?): Any? {
+    val slotsIndex = slotIndexOfGroupSlotIndex(group = group, index = index)
+    val slotAddress = dataIndexToDataAddress(dataIndex = slotsIndex)
+    val previous = slots[slotAddress]
+
+    slots[slotAddress] = value
+
+    return previous
+  }
+
+  /**
+   * Convert a slot group index into a global slot index.
+   *
+   * 슬롯 그룹 인덱스를 전역 슬롯 인덱스로 변환합니다.
+   */
+  // MEMO group의 index를 group 바깥 기준(slots array)의 index로 변환하는 함수?
   fun slotIndexOfGroupSlotIndex(group: Int, index: Int): Int {
-    val address = groupIndexToAddress(group)
-    val slotsStart = groups.slotIndex(address)
-    val slotsEnd = groups.dataIndex(groupIndexToAddress(group + 1))
+    val address = groupIndexToAddress(index = group)
+    val slotsStart = groups.slotIndex(address = address)
+    val slotsEnd = groups.dataIndex(address = groupIndexToAddress(index = group + 1))
     val slotsIndex = slotsStart + index
+
     @Suppress("ConvertTwoComparisonsToRangeCheck")
     runtimeCheck(slotsIndex >= slotsStart && slotsIndex < slotsEnd) {
+      // 그룹 $group의 잘못된 슬롯 인덱스 $index에 기록하려고 했습니다.
       "Write to an invalid slot index $index for group $group"
     }
+
     return slotsIndex
   }
 
-  /** Set the [group] slot at [index] to [value]. Returns the previous value. */
-  fun set(group: Int, index: Int, value: Any?): Any? {
-    val slotsIndex = slotIndexOfGroupSlotIndex(group, index)
-    val slotAddress = dataIndexToDataAddress(slotsIndex)
-    val result = slots[slotAddress]
-    slots[slotAddress] = value
-    return result
-  }
-
-  /** Set the slot by index to Composer.Empty, returning previous value */
+  /**
+   * Set the slot by index to [Composer.Empty], returning previous value.
+   *
+   * 인덱스로 지정된 슬롯을 [Composer.Empty]로 설정하고 이전 값을 반환합니다.
+   */
   fun clear(slotIndex: Int): Any? {
-    val address = dataIndexToDataAddress(slotIndex)
-    val result = slots[address]
+    val address = dataIndexToDataAddress(dataIndex = slotIndex)
+    val previous = slots[address]
+
     slots[address] = Composer.Empty
-    return result
+
+    return previous
   }
 
   /**
    * Skip the current slot without updating. If the slot table is inserting then and
    * [Composer.Empty] slot is added and [skip] return [Composer.Empty].
+   *
+   * 현재 슬롯을 갱신하지 않고 건너뜁니다. 슬롯 테이블이 삽입 중이라면 [Composer.Empty] 슬롯이
+   * 추가되고, [skip]은 [Composer.Empty]를 반환합니다.
    */
   fun skip(): Any? {
     if (insertCount > 0) {
-      insertSlots(1, parent)
+      insertSlots(size = 1, group = parent)
     }
-    return slots[dataIndexToDataAddress(currentSlot++)]
+
+    return slots[dataIndexToDataAddress(dataIndex = currentSlot++)]
   }
 
   /**
    * Read the [index] slot at the group at [anchor]. Returns [Composer.Empty] if the slot is empty
    * (e.g. out of range).
+   *
+   * [anchor]의 그룹에서 [index] 슬롯을 읽습니다. 슬롯이 비어 있으면(예: 범위를 벗어난 경우)
+   * [Composer.Empty]를 반환합니다.
    */
-  fun slot(anchor: Anchor, index: Int) = slot(anchorIndex(anchor), index)
+  fun slot(anchor: Anchor, index: Int): Any? =
+    slot(groupIndex = anchorIndex(anchor = anchor), index = index)
 
   /**
    * Read the [index] slot at the group at index [groupIndex]. Returns [Composer.Empty] if the
    * slot is empty (e.g. out of range).
+   *
+   * [groupIndex]에 있는 그룹에서 [index] 슬롯을 읽습니다. 슬롯이 비어 있으면(예: 범위를 벗어난 경우)
+   * [Composer.Empty]를 반환합니다.
    */
   fun slot(groupIndex: Int, index: Int): Any? {
-    val address = groupIndexToAddress(groupIndex)
-    val slotsStart = groups.slotIndex(address)
-    val slotsEnd = groups.dataIndex(groupIndexToAddress(groupIndex + 1))
+    val address = groupIndexToAddress(index = groupIndex)
+    val slotsStart = groups.slotIndex(address = address)
+    val slotsEnd = groups.dataIndex(address = groupIndexToAddress(index = groupIndex + 1))
     val slotsIndex = slotsStart + index
+
     if (slotsIndex !in slotsStart until slotsEnd) {
       return Composer.Empty
     }
-    val slotAddress = dataIndexToDataAddress(slotsIndex)
+
+    val slotAddress = dataIndexToDataAddress(dataIndex = slotsIndex)
+
     return slots[slotAddress]
   }
 
-  /** Call [block] for up to [count] slots values at the end of the group's slots. */
-  inline fun forEachTailSlot(groupIndex: Int, count: Int, block: (Int, Any?) -> Unit) {
-    val slotsStart = slotsStartIndex(groupIndex)
-    val slotsEnd = slotsEndIndex(groupIndex)
+  /**
+   * Call [block] for up to [count] slots values at the end of the group's slots.
+   *
+   * 그룹의 슬롯 끝에서 최대 [count]개의 슬롯 값에 대해 [block]을 호출합니다.
+   */
+  inline fun forEachTailSlot(
+    groupIndex: Int,
+    count: Int,
+    block: (slotIndex: Int, slotData: Any?) -> Unit,
+  ) {
+    val slotsStart = slotsStartIndex(groupIndex = groupIndex)
+    val slotsEnd = slotsEndIndex(groupIndex = groupIndex)
+
     for (slotIndex in max(slotsStart, slotsEnd - count) until slotsEnd) {
-      block(slotIndex, slots[dataIndexToDataAddress(slotIndex)])
+      block(slotIndex, slots[dataIndexToDataAddress(dataIndex = slotIndex)])
     }
   }
 
   /**
-   * Return the start index of the slot for [groupIndex]. Used in [forEachTailSlot] to enumerate
-   * slots.
+   * Return the start index of the slot for [groupIndex]. Used in [forEachTailSlot] to
+   * enumerate slots.
+   *
+   * [groupIndex]의 슬롯 시작 인덱스를 반환합니다. [forEachTailSlot]에서 슬롯을 열거하는 데
+   * 사용됩니다.
    */
   internal fun slotsStartIndex(groupIndex: Int): Int =
-    groups.slotIndex(groupIndexToAddress(groupIndex))
+    groups.slotIndex(address = groupIndexToAddress(index = groupIndex))
 
   /**
-   * Return the end index of the slot for [groupIndex]. Used in [forEachTailSlot] to enumerate
-   * slots.
+   * Return the end index of the slot for [groupIndex]. Used in [forEachTailSlot] to
+   * enumerate slots.
+   *
+   * [groupIndex]의 슬롯 끝 인덱스를 반환합니다. [forEachTailSlot]에서 슬롯을 열거하는 데
+   * 사용됩니다.
    */
   internal fun slotsEndIndex(groupIndex: Int): Int =
-    groups.dataIndex(groupIndexToAddress(groupIndex + 1))
+    groups.dataIndex(address = groupIndexToAddress(index = groupIndex + 1))
 
   internal fun slotsEndAllIndex(groupIndex: Int): Int =
-    groups.dataIndex(groupIndexToAddress(groupIndex + groupSize(groupIndex)))
+    groups.dataIndex(address = groupIndexToAddress(index = groupIndex + groupSize(index = groupIndex)))
 
   private val currentGroupSlotIndex: Int
-    get() = groupSlotIndex(parent)
+    get() = groupSlotIndex(group = parent)
 
-  fun groupSlotIndex(group: Int) =
-    currentSlot - slotsStartIndex(group) + (deferredSlotWrites?.get(group)?.size ?: 0)
+  fun groupSlotIndex(group: Int): Int =
+    currentSlot - slotsStartIndex(groupIndex = group) + (deferredSlotWrites?.get(group)?.size ?: 0)
 
   /**
    * Advance [currentGroup] by [amount]. The [currentGroup] group cannot be advanced outside the
    * currently started [parent].
+   *
+   * [currentGroup]를 [amount]만큼 전진합니다. [currentGroup] 그룹은 현재 시작된 [parent] 범위를
+   * 벗어나 전진할 수 없습니다.
    */
   fun advanceBy(amount: Int) {
-    runtimeCheck(amount >= 0) { "Cannot seek backwards" }
-    checkPrecondition(insertCount <= 0) { "Cannot call seek() while inserting" }
+    runtimeCheck(amount >= 0) {
+      // 뒤로 탐색할 수 없습니다.
+      "Cannot seek backwards"
+    }
+
+    checkPrecondition(insertCount <= 0) {
+      // 삽입 중에는 seek()을 호출할 수 없습니다.
+      "Cannot call seek() while inserting"
+    }
+
     if (amount == 0) return
+
     val index = currentGroup + amount
+
     @Suppress("ConvertTwoComparisonsToRangeCheck")
     runtimeCheck(index >= parent && index <= currentGroupEnd) {
-      "Cannot seek outside the current group ($parent-$currentGroupEnd)"
+      // 현재 그룹($parent..$currentGroupEnd) 밖으로는 seek할 수 없습니다.
+      "Cannot seek outside the current group ($parent..$currentGroupEnd)"
     }
+
     this.currentGroup = index
-    val newSlot = groups.dataIndex(groupIndexToAddress(index))
+
+    val newSlot = groups.dataIndex(address = groupIndexToAddress(index = index))
+
     this.currentSlot = newSlot
     this.currentSlotEnd = newSlot
   }
 
   /**
-   * Seek the current location to [anchor]. The [anchor] must be an anchor to a possibly indirect
-   * child of [parent].
+   * Seek the current location to [anchor]. The [anchor] must be an anchor to a
+   * possibly indirect child of [parent].
+   *
+   * 현재 위치를 [anchor]로 이동합니다. [anchor]는 [parent]의 간접 자식을 포함할 수
+   * 있는 앵커여야 합니다.
    */
-  fun seek(anchor: Anchor) = advanceBy(anchor.toIndexFor(this) - currentGroup)
+  fun seek(anchor: Anchor) {
+    advanceBy(amount = anchor.toIndexFor(writer = this) - currentGroup)
+  }
 
-  /** Skip to the end of the current group. */
+  /**
+   * Skip to the end of the current group.
+   *
+   * 현재 그룹의 끝까지 건너뜁니다.
+   */
   fun skipToGroupEnd() {
     val newGroup = currentGroupEnd
     currentGroup = newGroup
-    currentSlot = groups.dataIndex(groupIndexToAddress(newGroup))
+    currentSlot = groups.dataIndex(address = groupIndexToAddress(index = newGroup))
   }
 
   /**
    * Begin inserting at the current location. beginInsert() can be nested and must be called with
-   * a balanced number of endInsert()
+   * a balanced number of endInsert().
+   *
+   * 현재 위치에서 삽입을 시작합니다. beginInsert()는 중첩될 수 있으며, 반드시 동일한 횟수의
+   * endInsert()와 함께 호출되어야 합니다.
    */
   fun beginInsert() {
     if (insertCount++ == 0) {
@@ -2074,58 +2477,144 @@ internal class SlotWriter(
     }
   }
 
-  /** Ends inserting. */
+  /**
+   * Ends inserting.
+   *
+   * 삽입을 종료합니다.
+   */
   fun endInsert() {
     checkPrecondition(insertCount > 0) { "Unbalanced begin/end insert" }
+
     if (--insertCount == 0) {
       runtimeCheck(nodeCountStack.size == startStack.size) {
+        // 삽입 중 startGroup과 endGroup이 일치하지 않습니다.
         "startGroup/endGroup mismatch while inserting"
       }
+
       restoreCurrentGroupEnd()
     }
   }
 
-  /** Enter the group at current without changing it. Requires not currently inserting. */
+  /**
+   * Enter the group at current without changing it. Requires not currently inserting.
+   *
+   * 현재 그룹으로 들어가되 변경하지 않습니다. 삽입 중이 아니어야 합니다.
+   */
   fun startGroup() {
-    runtimeCheck(insertCount == 0) { "Key must be supplied when inserting" }
-    startGroup(key = 0, objectKey = Composer.Empty, isNode = false, aux = Composer.Empty)
+    runtimeCheck(insertCount == 0) {
+      // 삽입할 때는 반드시 키를 제공해야 합니다.
+      "Key must be supplied when inserting"
+    }
+
+    startGroup(
+      key = 0,
+      objectKey = Composer.Empty,
+      isNode = false,
+      aux = Composer.Empty,
+    )
   }
 
-  /** Start a group with a integer key */
-  fun startGroup(key: Int) = startGroup(key, Composer.Empty, isNode = false, aux = Composer.Empty)
+  /**
+   * Start a group with a integer key.
+   *
+   * 정수 키로 그룹을 시작합니다.
+   */
+  fun startGroup(key: Int) {
+    startGroup(
+      key = key,
+      objectKey = Composer.Empty,
+      isNode = false,
+      aux = Composer.Empty,
+    )
+  }
 
-  /** Start a group with a data key */
-  fun startGroup(key: Int, dataKey: Any?) =
-    startGroup(key, dataKey, isNode = false, aux = Composer.Empty)
+  /**
+   * Start a group with a data key.
+   *
+   * 데이터 키로 그룹을 시작합니다.
+   */
+  fun startGroup(key: Int, dataKey: Any?) {
+    startGroup(
+      key = key,
+      objectKey = dataKey,
+      isNode = false,
+      aux = Composer.Empty,
+    )
+  }
 
-  /** Start a node. */
-  fun startNode(key: Int, objectKey: Any?) =
-    startGroup(key, objectKey, isNode = true, aux = Composer.Empty)
+  /**
+   * Start a node.
+   *
+   * 노드를 시작합니다.
+   */
+  fun startNode(key: Int, objectKey: Any?) {
+    startGroup(
+      key = key,
+      objectKey = objectKey,
+      isNode = true,
+      aux = Composer.Empty,
+    )
+  }
 
-  /** Start a node */
-  fun startNode(key: Int, objectKey: Any?, node: Any?) =
-    startGroup(key, objectKey, isNode = true, aux = node)
+  /**
+   * Start a node with a aux.
+   *
+   * aux와 함께 노드를 시작합니다.
+   */
+  fun startNode(key: Int, objectKey: Any?, node: Any?) {
+    startGroup(
+      key = key,
+      objectKey = objectKey,
+      isNode = true,
+      aux = node,
+    )
+  }
 
-  /** Start a data group. */
-  fun startData(key: Int, objectKey: Any?, aux: Any?) =
-    startGroup(key, objectKey, isNode = false, aux = aux)
+  /**
+   * Start a data group.
+   *
+   * 데이터 그룹을 시작합니다.
+   */
+  fun startData(key: Int, objectKey: Any?, aux: Any?) {
+    startGroup(
+      key = key,
+      objectKey = objectKey,
+      isNode = false,
+      aux = aux,
+    )
+  }
 
-  /** Start a data group. */
-  fun startData(key: Int, aux: Any?) = startGroup(key, Composer.Empty, isNode = false, aux = aux)
+  /**
+   * Start a data group.
+   *
+   * 데이터 그룹을 시작합니다.
+   */
+  fun startData(key: Int, aux: Any?) {
+    startGroup(
+      key = key,
+      objectKey = Composer.Empty,
+      isNode = false,
+      aux = aux,
+    )
+  }
 
   private fun startGroup(key: Int, objectKey: Any?, isNode: Boolean, aux: Any?) {
     val previousParent = parent
     val inserting = insertCount > 0
+
     nodeCountStack.push(nodeCount)
 
-    currentGroupEnd =
+    currentGroupEnd = // Int
       if (inserting) {
         val current = currentGroup
-        val newCurrentSlot = groups.dataIndex(groupIndexToAddress(current))
-        insertGroups(1)
+        val newCurrentSlot = groups.dataIndex(address = groupIndexToAddress(index = current))
+
+        insertGroups(size = 1)
+
         currentSlot = newCurrentSlot
         currentSlotEnd = newCurrentSlot
-        val currentAddress = groupIndexToAddress(current)
+
+        val currentAddress = groupIndexToAddress(index = current)
         val hasObjectKey = objectKey !== Composer.Empty
         val hasAux = !isNode && aux !== Composer.Empty
         val dataAnchor =
@@ -2147,10 +2636,19 @@ internal class SlotWriter(
                 // negative value for all groups after the slotGapOwner so when the
                 // gap moves it can adjust the anchors correctly needs the negative
                 // anchor.
+                //
+                // 이 경우는 예외로, 부모가 자신의 그룹에 슬롯을 추가하면서 slotGapOwner가
+                // 뒤로 밀렸지만 그 사이의 어떤 그룹도 슬롯을 갖지 않아 slotCurrent가 갭의
+                // 시작에 있으면서도 이 그룹의 소유가 아닌 상황을 말합니다. 정의상 갭의
+                // 시작은 인덱스이지만, 실제로 이 위치에는 양수와 음수 두 가지 유효한
+                // 앵커 값이 존재합니다(음수는 슬롯 배열 끝에서의 거리). 이 경우 moveSlotGapTo()는
+                // slotGapOwner 이후 모든 그룹에 음수 값을 사용해야 하며, 그래야 갭 이동 시
+                // 앵커를 올바르게 조정할 수 있습니다
                 val slotsSize = slots.size - slotsGapLen
                 -(slotsSize - anchor + 1)
               } else anchor
             }
+
         groups.initGroup(
           address = currentAddress,
           key = key,
@@ -2163,83 +2661,130 @@ internal class SlotWriter(
 
         val dataSlotsNeeded =
           (if (isNode) 1 else 0) + (if (hasObjectKey) 1 else 0) + (if (hasAux) 1 else 0)
+
         if (dataSlotsNeeded > 0) {
-          insertSlots(dataSlotsNeeded, current)
+          insertSlots(size = dataSlotsNeeded, group = current)
+
           val slots = slots
           var currentSlot = currentSlot
+
           if (isNode) slots[currentSlot++] = aux
           if (hasObjectKey) slots[currentSlot++] = objectKey
           if (hasAux) slots[currentSlot++] = aux
+
           this.currentSlot = currentSlot
         }
+
         nodeCount = 0
+
         val newCurrent = current + 1
+
         this.parent = current
         this.currentGroup = newCurrent
+
         if (previousParent >= 0) {
-          sourceInformationOf(previousParent)?.reportGroup(this, current)
+          sourceInformationOf(group = previousParent)
+            ?.reportGroup(writer = this, group = current)
         }
+
         newCurrent
-      } else {
+      }
+
+      // inserting == false
+      else {
         startStack.push(previousParent)
         saveCurrentGroupEnd()
+
         val currentGroup = currentGroup
-        val currentGroupAddress = groupIndexToAddress(currentGroup)
+        val currentGroupAddress = groupIndexToAddress(index = currentGroup)
+
         if (aux != Composer.Empty) {
-          if (isNode) updateNode(aux) else updateAux(aux)
+          if (isNode)
+            updateNode(value = aux)
+          else
+            updateAux(value = aux)
         }
-        currentSlot = groups.slotIndex(currentGroupAddress)
-        currentSlotEnd = groups.dataIndex(groupIndexToAddress(this.currentGroup + 1))
-        nodeCount = groups.nodeCount(currentGroupAddress)
+
+        currentSlot = groups.slotIndex(address = currentGroupAddress)
+        currentSlotEnd = groups.dataIndex(address = groupIndexToAddress(this.currentGroup + 1))
+        nodeCount = groups.nodeCount(address = currentGroupAddress)
 
         this.parent = currentGroup
         this.currentGroup = currentGroup + 1
-        currentGroup + groups.groupSize(currentGroupAddress)
+
+        currentGroup + groups.groupSize(address = currentGroupAddress)
       }
   }
 
-  /** End the current group. Must be called after the corresponding startGroup(). */
+  /**
+   * End the current group. Must be called after the corresponding startGroup().
+   *
+   * 현재 그룹을 종료합니다. 반드시 대응되는 startGroup() 호출 이후에 호출해야 합니다.
+   */
   fun endGroup(): Int {
     val inserting = insertCount > 0
     val currentGroup = currentGroup
     val currentGroupEnd = currentGroupEnd
 
     val groupIndex = parent
-    val groupAddress = groupIndexToAddress(groupIndex)
+    val groupAddress = groupIndexToAddress(index = groupIndex)
     val newNodes = nodeCount
     val newGroupSize = currentGroup - groupIndex
-    val isNode = groups.isNode(groupAddress)
+    val isNode = groups.isNode(address = groupAddress)
+
     if (inserting) {
-      // Check for deferred slot writes
+      // Check for deferred slot writes.
+      // 지연된 슬롯 쓰기가 있는지 확인합니다.
       val deferredSlotWrites = deferredSlotWrites
-      deferredSlotWrites?.get(groupIndex)?.let {
-        it.forEach { value -> rawUpdate(value) }
+
+      deferredSlotWrites?.get(groupIndex)?.let { deferredWrites ->
+        deferredWrites.forEach { value -> rawUpdate(value = value) }
         deferredSlotWrites.remove(groupIndex)
       }
 
-      // Close the group
-      groups.updateGroupSize(groupAddress, newGroupSize)
-      groups.updateNodeCount(groupAddress, newNodes)
+      // Close the group.
+      // 그룹을 닫습니다.
+      groups.updateGroupSize(address = groupAddress, value = newGroupSize)
+      groups.updateNodeCount(address = groupAddress, value = newNodes)
+
       nodeCount = nodeCountStack.pop() + if (isNode) 1 else newNodes
-      parent = groups.parent(groupIndex)
-      val nextAddress = if (parent < 0) size else groupIndexToAddress(parent + 1)
-      val newCurrentSlot = if (nextAddress < 0) 0 else groups.dataIndex(nextAddress)
+      parent = groups.parent(index = groupIndex)
+
+      val nextAddress = if (parent < 0) size else groupIndexToAddress(index = parent + 1)
+      val newCurrentSlot = if (nextAddress < 0) 0 else groups.dataIndex(address = nextAddress)
+
       currentSlot = newCurrentSlot
       currentSlotEnd = newCurrentSlot
-    } else {
-      runtimeCheck(currentGroup == currentGroupEnd) { "Expected to be at the end of a group" }
-      // Update group length
-      val oldGroupSize = groups.groupSize(groupAddress)
-      val oldNodes = groups.nodeCount(groupAddress)
-      groups.updateGroupSize(groupAddress, newGroupSize)
-      groups.updateNodeCount(groupAddress, newNodes)
+    }
+
+    // inserting == false
+    else {
+      runtimeCheck(currentGroup == currentGroupEnd) {
+        // 그룹의 끝에 있어야 합니다.
+        "Expected to be at the end of a group"
+      }
+
+      // Update group length.
+      // 그룹 길이를 갱신합니다.
+      val oldGroupSize = groups.groupSize(address = groupAddress)
+      val oldNodes = groups.nodeCount(address = groupAddress)
+
+      groups.updateGroupSize(address = groupAddress, value = newGroupSize)
+      groups.updateNodeCount(address = groupAddress, value = newNodes)
+
       val newParent = startStack.pop()
+
       restoreCurrentGroupEnd()
+
       this.parent = newParent
-      val groupParent = groups.parent(groupIndex)
+
+      val groupParent = groups.parent(index = groupIndex)
+
       nodeCount = nodeCountStack.pop()
+
       if (groupParent == newParent) {
         // The parent group was started we just need to update the node count.
+        // 부모 그룹이 시작된 상태이므로 노드 수만 갱신하면 됩니다.
         nodeCount += if (isNode) 0 else newNodes - oldNodes
       } else {
         // If we are closing a group for which startGroup was called after calling
@@ -2248,33 +2793,47 @@ internal class SlotWriter(
         // group being closed and the group that is currently open need to be adjusted.
         // This allows the caller to avoid the overhead of needing to start and end the
         // groups explicitly.
+        //
+        // seek() 호출 이후에 startGroup이 호출된 그룹을 닫는 경우입니다. startGroup은
+        // 간접 자식들을 시작할 수 있게 합니다. 그룹의 크기나 포함된 노드 수가 달라졌다면,
+        // 닫히는 그룹과 현재 열려 있는 그룹 사이에 있는 그룹들을 조정해야 합니다. 이렇게
+        // 하면 호출자가 그룹들을 일일이 시작하고 종료하는 오버헤드를 피할 수 있습니다.
         val groupSizeDelta = newGroupSize - oldGroupSize
         var nodesDelta = if (isNode) 0 else newNodes - oldNodes
+
         if (groupSizeDelta != 0 || nodesDelta != 0) {
           var current = groupParent
+
           while (
             current != 0 &&
             current != newParent &&
             (nodesDelta != 0 || groupSizeDelta != 0)
           ) {
-            val currentAddress = groupIndexToAddress(current)
+            val currentAddress = groupIndexToAddress(index = current)
+
             if (groupSizeDelta != 0) {
-              val newSize = groups.groupSize(currentAddress) + groupSizeDelta
-              groups.updateGroupSize(currentAddress, newSize)
+              val newSize = groups.groupSize(address = currentAddress) + groupSizeDelta
+              groups.updateGroupSize(address = currentAddress, value = newSize)
             }
+
             if (nodesDelta != 0) {
               groups.updateNodeCount(
-                currentAddress,
-                groups.nodeCount(currentAddress) + nodesDelta,
+                address = currentAddress,
+                value = groups.nodeCount(address = currentAddress) + nodesDelta,
               )
             }
-            if (groups.isNode(currentAddress)) nodesDelta = 0
-            current = groups.parent(current)
+
+            if (groups.isNode(address = currentAddress))
+              nodesDelta = 0
+
+            current = groups.parent(index = current)
           }
         }
+
         nodeCount += nodesDelta
       }
     }
+
     return newNodes
   }
 
@@ -2287,74 +2846,131 @@ internal class SlotWriter(
    *
    * Calling [ensureStarted] implies that an [endGroup] should be called once the end of the group
    * is reached.
+   *
+   *
+   * [skip]으로 그룹 시작을 건너뛴 경우, [ensureStarted]를 호출하면 writer는 [index]에서 시작하는
+   * 그룹에 대해 [startGroup] 또는 [startNode]가 호출된 것과 동일한 상태가 됩니다. 그룹을 시작한 후
+   * [currentGroup]이 해당 그룹의 끝에 있지 않거나, [index]가 부모 그룹의 위치가 아닌 그룹의 시작이
+   * 아니라면 예외가 발생합니다.
+   *
+   * [ensureStarted]를 호출하면 그룹의 끝에 도달했을 때 반드시 [endGroup]을 호출해야 함을 의미합니다.
    */
   fun ensureStarted(index: Int) {
-    runtimeCheck(insertCount <= 0) { "Cannot call ensureStarted() while inserting" }
+    runtimeCheck(insertCount <= 0) {
+      // 삽입 중에는 ensureStarted()를 호출할 수 없습니다.
+      "Cannot call ensureStarted() while inserting"
+    }
+
     val parent = parent
     if (parent != index) {
       // The new parent a child of the current group.
+      // 새 부모는 현재 그룹의 자식입니다.
       @Suppress("ConvertTwoComparisonsToRangeCheck")
       runtimeCheck(index >= parent && index < currentGroupEnd) {
+        // $index 위치에서 시작한 그룹은 $parent 그룹의 하위 그룹이어야 합니다.
         "Started group at $index must be a subgroup of the group at $parent"
       }
 
       val oldCurrent = currentGroup
       val oldCurrentSlot = currentSlot
       val oldCurrentSlotEnd = currentSlotEnd
+
       currentGroup = index
+
       startGroup()
+
       currentGroup = oldCurrent
       currentSlot = oldCurrentSlot
       currentSlotEnd = oldCurrentSlotEnd
     }
   }
 
-  fun ensureStarted(anchor: Anchor) = ensureStarted(anchor.toIndexFor(this))
-
-  /** Skip the current group. Returns the number of nodes skipped by skipping the group. */
-  fun skipGroup(): Int {
-    val groupAddress = groupIndexToAddress(currentGroup)
-    val newGroup = currentGroup + groups.groupSize(groupAddress)
-    this.currentGroup = newGroup
-    this.currentSlot = groups.dataIndex(groupIndexToAddress(newGroup))
-    return if (groups.isNode(groupAddress)) 1 else groups.nodeCount(groupAddress)
+  fun ensureStarted(anchor: Anchor) {
+    ensureStarted(index = anchor.toIndexFor(writer = this))
   }
 
-  /** Remove the current group. Returns if any anchors were in the group removed. */
+  /**
+   * Skip the current group. Returns the number of nodes skipped by skipping the group.
+   *
+   * 현재 그룹을 건너뜁니다. 그룹을 건너뛴 결과 생략된 노드의 개수를 반환합니다.
+   */
+  fun skipGroup(): Int {
+    val groupAddress = groupIndexToAddress(index = currentGroup)
+    val newGroup = currentGroup + groups.groupSize(address = groupAddress)
+
+    this.currentGroup = newGroup
+    this.currentSlot = groups.dataIndex(address = groupIndexToAddress(index = newGroup))
+
+    return if (groups.isNode(address = groupAddress))
+      1
+    else
+      groups.nodeCount(address = groupAddress)
+  }
+
+  /**
+   * Remove the current group. Returns if any anchors were in the group removed.
+   *
+   * 현재 그룹을 제거합니다. 제거된 그룹에 앵커가 있었는지 여부를 반환합니다.
+   */
   fun removeGroup(): Boolean {
-    runtimeCheck(insertCount == 0) { "Cannot remove group while inserting" }
+    runtimeCheck(insertCount == 0) {
+      // 삽입 중에는 그룹을 제거할 수 없습니다.
+      "Cannot remove group while inserting"
+    }
+
     val oldGroup = currentGroup
     val oldSlot = currentSlot
-    val dataStart = groups.dataIndex(groupIndexToAddress(oldGroup))
+    val dataStart = groups.dataIndex(address = groupIndexToAddress(index = oldGroup))
     val count = skipGroup()
 
-    // Remove the group from its parent information
-    sourceInformationOf(parent)?.let { sourceInformation ->
-      tryAnchor(oldGroup)?.let { anchor -> sourceInformation.removeAnchor(anchor) }
+    // Remove the group from its parent information.
+    // 그룹을 부모 정보에서 제거합니다.
+    sourceInformationOf(group = parent)?.let { sourceInformation ->
+      tryAnchor(group = oldGroup)?.let { anchor -> sourceInformation.removeAnchor(anchor = anchor) }
     }
 
     // Remove any recalculate markers ahead of this delete as they are in the group
     // that is being deleted.
-    pendingRecalculateMarks?.let {
-      while (it.isNotEmpty() && it.peek() >= oldGroup) {
-        it.takeMax()
+    //
+    // 삭제되는 그룹 안에 있으므로, 이 삭제보다 앞서 있는 재계산 마커들을 제거합니다.
+    pendingRecalculateMarks?.let { marks ->
+      while (marks.isNotEmpty() && marks.peek() >= oldGroup) {
+        marks.takeMax()
       }
     }
 
-    val anchorsRemoved = removeGroups(oldGroup, currentGroup - oldGroup)
-    removeSlots(dataStart, currentSlot - dataStart, oldGroup - 1)
+    val anchorsRemoved =
+      removeGroups(start = oldGroup, len = currentGroup - oldGroup)
+
+    removeSlots(
+      start = dataStart,
+      len = currentSlot - dataStart,
+      group = oldGroup - 1,
+    )
+
     currentGroup = oldGroup
     currentSlot = oldSlot
     nodeCount -= count
+
     return anchorsRemoved
   }
 
-  /** Returns an iterator for all the slots of group and all the children of the group. */
+  /**
+   * Returns an iterator for all the slots of group and all the children of the group.
+   *
+   * 그룹과 그 자식 그룹의 모든 슬롯을 순회하는 iterator를 반환합니다.
+   */
   fun groupSlots(): Iterator<Any?> {
-    val start = groups.dataIndex(groupIndexToAddress(currentGroup))
-    val end = groups.dataIndex(groupIndexToAddress(currentGroup + groupSize(currentGroup)))
+    val start = groups.dataIndex(address = groupIndexToAddress(index = currentGroup))
+    val end =
+      groups.dataIndex(
+        address = groupIndexToAddress(
+          index = currentGroup + groupSize(index = currentGroup),
+        ),
+      )
+
     return object : Iterator<Any?> {
-      var current = start
+      var current: Int = start
 
       override fun hasNext(): Boolean = current < end
 
@@ -2365,11 +2981,17 @@ internal class SlotWriter(
 
   @Suppress("unused")
   inline fun forAllData(group: Int, block: (index: Int, data: Any?) -> Unit) {
-    val address = groupIndexToAddress(group)
-    val start = groups.dataIndex(address)
-    val end = groups.dataIndex(groupIndexToAddress(currentGroup + groupSize(currentGroup)))
+    val address = groupIndexToAddress(index = group)
+    val start = groups.dataIndex(address = address)
+    val end =
+      groups.dataIndex(
+        address = groupIndexToAddress(
+          index = currentGroup + groupSize(index = currentGroup),
+        ),
+      )
+
     for (slot in start until end) {
-      block(slot, slots[dataIndexToDataAddress(slot)])
+      block(slot, slots[dataIndexToDataAddress(dataIndex = slot)])
     }
   }
 
@@ -2379,22 +3001,28 @@ internal class SlotWriter(
     exit: (child: Int) -> Unit,
   ) {
     var current = group
-    var currentParent = parent(current)
+    var currentParent = parent(index = current)
     val size = size
-    val end = group + groupSize(group)
+    val end = group + groupSize(index = group)
+
     while (current < end) {
       enter(current)
+
       val next = current + 1
-      val nextParent = if (next < size) parent(next) else -1
+      val nextParent = if (next < size) parent(index = next) else -1
+
       if (nextParent != current) {
         while (true) {
           exit(current)
+
           if (current == group) break
           if (currentParent == nextParent) break
+
           current = currentParent
-          currentParent = parent(current)
+          currentParent = parent(index = current)
         }
       }
+
       current = next
       currentParent = nextParent
     }
@@ -2404,61 +3032,78 @@ internal class SlotWriter(
     // The list and set implement a multi-map of groups to slots that need to be emitted
     // after group. The a multi-map itself is not used as a generic multi map would box the
     // integers and otherwise allocate more memory.
+    //
+    // list와 set은 그룹 이후에 출력해야 하는 슬롯을 매핑하는 멀티맵을 구현합니다.
+    // 일반적인 멀티맵은 정수를 boxing하고 불필요한 메모리를 할당하기 때문에 사용하지
+    // 않습니다.
     var deferredSlotIndexes: MutableIntList? = null
     var deferredAfters: MutableIntSet? = null
+
     traverseGroupAndChildren(
-      group,
+      group = group,
       enter = { child ->
-        for (slotIndex in dataIndex(child) until dataIndex(child + 1)) {
-          val address = dataIndexToDataAddress(slotIndex)
+        for (slotIndex in dataIndex(index = child) until dataIndex(index = child + 1)) {
+          val address = dataIndexToDataAddress(dataIndex = slotIndex)
           val value = slots[address]
+
           if (value is RememberObserverHolder) {
             val after = value.after
             if (after != null && after.valid) {
               // If the data is a remember holder that has an anchor, it must be
-              // emitted
-              // after the group it is anchored so defer it now.
-              val index = anchorIndex(after)
-              val afters =
-                deferredAfters ?: mutableIntSetOf().also { deferredAfters = it }
-              val slots =
-                deferredSlotIndexes
-                  ?: mutableIntListOf().also { deferredSlotIndexes = it }
+              // emitted after the group it is anchored so defer it now.
+              //
+              // 데이터가 앵커를 가진 remember 홀더라면 앵커된 그룹 뒤에 출력해야
+              // 하므로 지금은 지연합니다.
+              val index = anchorIndex(anchor = after)
+              val afters = deferredAfters ?: mutableIntSetOf().also { deferredAfters = it }
+              val slots = deferredSlotIndexes ?: mutableIntListOf().also { deferredSlotIndexes = it }
+
               afters.add(index)
               slots.add(index)
               slots.add(slotIndex)
+
               continue
             }
           }
+
           block(slotIndex, value)
         }
       },
       exit = { child ->
         val slotIndexes = deferredSlotIndexes
         val afters = deferredAfters
+
         if (slotIndexes != null && afters != null && afters.remove(child)) {
           var expected = 0
           val size = slotIndexes.size
+
           repeat(size / 2) {
             val start = it * 2
             val after = slotIndexes[start]
+
             if (after == child) {
               val slotIndex = slotIndexes[start + 1]
-              val data = slots[dataIndexToDataAddress(slotIndex)]
+              val data = slots[dataIndexToDataAddress(dataIndex = slotIndex)]
+
               block(slotIndex, data)
             } else {
               // This pattern removes the group from the list while
               // enumerating following a removeIf style pattern. We cannot
               // use removeIf directly the int array stores an inline pair of
               // the after group index and the slot index.
+              //
+              // 이 패턴은 removeIf 스타일로 열거하는 동안 리스트에서 그룹을
+              // 제거합니다. int 배열이 after 그룹 인덱스와 슬롯 인덱스의
+              // 인라인 쌍을 저장하므로 removeIf를 직접 사용할 수 없습니다.
               if (start != expected) {
                 slotIndexes[expected++] = after
                 slotIndexes[expected++] = slotIndexes[start + 1]
               } else expected += 2
             }
           }
+
           if (expected != size) {
-            slotIndexes.removeRange(expected, size)
+            slotIndexes.removeRange(start = expected, end = size)
           }
         }
       },
@@ -2469,27 +3114,46 @@ internal class SlotWriter(
    * Move the group at [offset] groups after [currentGroup] to be in front of [currentGroup].
    * After this completes, the moved group will be the current group. [offset] must less than the
    * number of groups after the [currentGroup] left in the [parent] group.
+   *
+   * [currentGroup] 뒤 [offset]번째 그룹을 [currentGroup] 앞으로 이동합니다. 완료되면 이동된
+   * 그룹이 현재 그룹이 됩니다. [offset]은 [parent] 그룹에서 [currentGroup] 뒤에 남아 있는
+   * 그룹 수보다 작아야 합니다.
    */
   fun moveGroup(offset: Int) {
-    runtimeCheck(insertCount == 0) { "Cannot move a group while inserting" }
-    runtimeCheck(offset >= 0) { "Parameter offset is out of bounds" }
+    runtimeCheck(insertCount == 0) {
+      // 삽입 중에는 그룹을 이동할 수 없습니다.
+      "Cannot move a group while inserting"
+    }
+    runtimeCheck(offset >= 0) {
+      // 매개변수 offset이 범위를 벗어났습니다.
+      "Parameter offset is out of bounds"
+    }
+
     if (offset == 0) return
+
     val current = currentGroup
     val parent = parent
     val parentEnd = currentGroupEnd
 
-    // Find the group to move
+    // Find the group to move.
+    // 이동할 그룹을 찾습니다.
     var count = offset
     var groupToMove = current
+
     while (count > 0) {
-      groupToMove += groups.groupSize(address = groupIndexToAddress(groupToMove))
-      runtimeCheck(groupToMove <= parentEnd) { "Parameter offset is out of bounds" }
+      groupToMove += groups.groupSize(address = groupIndexToAddress(index = groupToMove))
+
+      runtimeCheck(groupToMove <= parentEnd) {
+        // 매개변수 offset이 범위를 벗어났습니다.
+        "Parameter offset is out of bounds"
+      }
+
       count--
     }
 
-    val moveLen = groups.groupSize(address = groupIndexToAddress(groupToMove))
-    val destinationSlot = groups.dataIndex(groupIndexToAddress(currentGroup))
-    val dataStart = groups.dataIndex(groupIndexToAddress(groupToMove))
+    val moveLen = groups.groupSize(address = groupIndexToAddress(index = groupToMove))
+    val destinationSlot = groups.dataIndex(address = groupIndexToAddress(index = currentGroup))
+    val dataStart = groups.dataIndex(address = groupIndexToAddress(index = groupToMove))
     val dataEnd = groups.dataIndex(address = groupIndexToAddress(index = groupToMove + moveLen))
     val moveDataLen = dataEnd - dataStart
 
@@ -2509,27 +3173,57 @@ internal class SlotWriter(
     // slots must be removed after the groups that reference the old locations are removed.
     // So the order of operations when moving groups is,
     //
-    //  1) insert space for the slots at the destination (must be first)
-    //  2) insert space for the groups at the destination
-    //  3) copy the groups to their new location
-    //  4) copy the slots to their new location
-    //  5) fix-up the moved group anchors to refer to the new slot locations
-    //  6) update any anchors in the group being moved
-    //  7) remove the old groups
-    //  8) fix parent anchors
-    //  9) remove the old slots (must be last)
+    //   1) insert space for the slots at the destination (must be first)
+    //   2) insert space for the groups at the destination
+    //   3) copy the groups to their new location
+    //   4) copy the slots to their new location
+    //   5) fix-up the moved group anchors to refer to the new slot locations
+    //   6) update any anchors in the group being moved
+    //   7) remove the old groups
+    //   8) fix parent anchors
+    //   9) remove the old slots (must be last)
+    //
+    //
+    //
+    // 여기는 연산 순서가 중요합니다. 배열에서 블록을 이동하려면,
+    //
+    //   1. 블록을 위한 공간을 삽입
+    //   2. 블록을 복사
+    //   3. 이전 블록을 삭제
+    //
+    // gap 버퍼에 삽입하려면 삽입 위치로 gap을 이동한 후 gap을 줄여야 합니다. 슬롯 테이블에서
+    // gap을 이동시키면 gap 이동으로 위치가 바뀐 곳을 참조하는 그룹 테이블의 모든 앵커를
+    // 갱신해야 합니다. 이것이 올바르게 동작하려면 그룹이 유효한 상태여야 합니다. 따라서
+    // 먼저 슬롯 테이블에 삽입이 이뤄져야 하며, 그렇게 하면 그룹에 임시로 잘못된 상태(잘못된,
+    // 중복된, 순서가 어긋난 앵커)가 생기지 않습니다. 반대로 슬롯 제거도 gap 이동을 수반하므로
+    // 그룹이 유효해야 하며, 따라서 이전 위치를 참조하는 그룹들이 제거된 후에 슬롯을 제거해야
+    // 합니다. 따라서 그룹을 이동할 때 연산 순서는 다음과 같습니다.
+    //
+    //   1. 대상 위치에 슬롯을 위한 공간 삽입 (반드시 먼저)
+    //   2. 대상 위치에 그룹을 위한 공간 삽입
+    //   3. 그룹을 새 위치로 복사
+    //   4. 슬롯을 새 위치로 복사
+    //   5. 이동된 그룹 앵커를 새 슬롯 위치를 참조하도록 수정
+    //   6. 이동된 그룹 내의 앵커 갱신
+    //   7. 이전 그룹 제거
+    //   8. 부모 앵커 수정
+    //   9. 이전 슬롯 제거 (반드시 마지막)
 
     // 1) insert space for the slots at the destination (must be first)
-    insertSlots(moveDataLen, max(currentGroup - 1, 0))
+    // 1. 대상 위치에 슬롯을 위한 공간 삽입 (반드시 먼저)
+    insertSlots(size = moveDataLen, group = max(currentGroup - 1, 0))
 
-    //  2) insert space for the groups at the destination
-    insertGroups(moveLen)
+    // 2) insert space for the groups at the destination
+    // 2. 대상 위치에 그룹을 위한 공간 삽입
+    insertGroups(size = moveLen)
 
-    //  3) copy the groups to their new location
+    // 3) copy the groups to their new location
+    // 3. 그룹을 새 위치로 복사
     val groups = groups
-    val moveLocationAddress = groupIndexToAddress(groupToMove + moveLen)
+    val moveLocationAddress = groupIndexToAddress(index = groupToMove + moveLen)
     val moveLocationOffset = moveLocationAddress * Group_Fields_Size
-    val currentAddress = groupIndexToAddress(current)
+    val currentAddress = groupIndexToAddress(index = current)
+
     groups.copyInto(
       destination = groups,
       destinationOffset = currentAddress * Group_Fields_Size,
@@ -2537,26 +3231,29 @@ internal class SlotWriter(
       endIndex = moveLocationOffset + moveLen * Group_Fields_Size,
     )
 
-    //  4) copy the slots to their new location
+    // 4) copy the slots to their new location
+    // 4. 슬롯을 새 위치로 복사
     if (moveDataLen > 0) {
       val slots = slots
       slots.fastCopyInto(
         destination = slots,
         destinationOffset = destinationSlot,
-        startIndex = dataIndexToDataAddress(dataStart + moveDataLen),
-        endIndex = dataIndexToDataAddress(dataEnd + moveDataLen),
+        startIndex = dataIndexToDataAddress(dataIndex = dataStart + moveDataLen),
+        endIndex = dataIndexToDataAddress(dataIndex = dataEnd + moveDataLen),
       )
     }
 
-    //  5) fix-up the moved group anchors to refer to the new slot locations
+    // 5) fix-up the moved group anchors to refer to the new slot locations
+    // 5. 이동된 그룹 앵커를 새 슬롯 위치를 참조하도록 수정
     val dataMoveDistance = (dataStart + moveDataLen) - destinationSlot
     val slotsGapStart = slotsGapStart
     val slotsGapLen = slotsGapLen
     val slotsCapacity = slots.size
     val slotsGapOwner = slotsGapOwner
+
     for (group in current until current + moveLen) {
-      val groupAddress = groupIndexToAddress(group)
-      val oldIndex = groups.dataIndex(groupAddress)
+      val groupAddress = groupIndexToAddress(index = group)
+      val oldIndex = groups.dataIndex(address = groupAddress)
       val newIndex = oldIndex - dataMoveDistance
       val newAnchor =
         dataIndexToDataAnchor(
@@ -2565,22 +3262,47 @@ internal class SlotWriter(
           gapLen = slotsGapLen,
           capacity = slotsCapacity,
         )
-      groups.updateDataIndex(groupAddress, newAnchor)
+
+      groups.updateDataIndex(address = groupAddress, dataIndex = newAnchor)
     }
 
-    //  6) update any anchors in the group being moved
-    moveAnchors(groupToMove + moveLen, current, moveLen)
+    // 6) update any anchors in the group being moved
+    // 6. 이동된 그룹 내의 앵커 갱신
+    moveAnchors(
+      originalLocation = groupToMove + moveLen,
+      newLocation = current,
+      size = moveLen,
+    )
 
-    //  7) remove the old groups
-    val anchorsRemoved = removeGroups(groupToMove + moveLen, moveLen)
-    runtimeCheck(!anchorsRemoved) { "Unexpectedly removed anchors" }
+    // 7) remove the old groups
+    // 7. 이전 그룹 제거
+    val anchorsRemoved =
+      removeGroups(
+        start = groupToMove + moveLen,
+        len = moveLen,
+      )
 
-    //  8) fix parent anchors
-    fixParentAnchorsFor(parent, currentGroupEnd, current)
+    runtimeCheck(!anchorsRemoved) {
+      // 예상치 않게 앵커가 제거되었습니다.
+      "Unexpectedly removed anchors"
+    }
 
-    //  9) remove the old slots (must be last)
+    // 8) fix parent anchors
+    // 8. 부모 앵커 수정
+    fixParentAnchorsFor(
+      parent = parent,
+      endGroup = currentGroupEnd,
+      firstChild = current,
+    )
+
+    // 9) remove the old slots (must be last)
+    // 9. 이전 슬롯 제거 (반드시 마지막)
     if (moveDataLen > 0) {
-      removeSlots(dataStart + moveDataLen, moveDataLen, groupToMove + moveLen - 1)
+      removeSlots(
+        start = dataStart + moveDataLen,
+        len = moveDataLen,
+        group = groupToMove + moveLen - 1,
+      )
     }
   }
 
@@ -2593,37 +3315,45 @@ internal class SlotWriter(
       updateToCursor: Boolean,
       removeSourceGroup: Boolean = true,
     ): List<Anchor> {
-      val groupsToMove = fromWriter.groupSize(fromIndex)
+      val groupsToMove = fromWriter.groupSize(index = fromIndex)
       val sourceGroupsEnd = fromIndex + groupsToMove
-      val sourceSlotsStart = fromWriter.dataIndex(fromIndex)
-      val sourceSlotsEnd = fromWriter.dataIndex(sourceGroupsEnd)
+      val sourceSlotsStart = fromWriter.dataIndex(index = fromIndex)
+      val sourceSlotsEnd = fromWriter.dataIndex(index = sourceGroupsEnd)
       val slotsToMove = sourceSlotsEnd - sourceSlotsStart
-      val hasMarks = fromWriter.containsAnyGroupMarks(fromIndex)
+      val hasMarks = fromWriter.containsAnyGroupMarks(group = fromIndex)
 
-      // Make room in the slot table
-      toWriter.insertGroups(groupsToMove)
-      toWriter.insertSlots(slotsToMove, toWriter.currentGroup)
+      // Make room in the slot table.
+      // 슬롯 테이블에 공간을 마련합니다.
+      toWriter.insertGroups(size = groupsToMove)
+      toWriter.insertSlots(size = slotsToMove, group = toWriter.currentGroup)
 
       // If either from gap is before the move, move the gap after the move to simplify
       // the logic of this method.
+      //
+      // from 쪽의 gap이 이동 대상보다 앞에 있으면, 이 메서드의 로직을 단순화하기 위해
+      // 이동 이후 위치로 gap을 옮깁니다.
       if (fromWriter.groupGapStart < sourceGroupsEnd) {
-        fromWriter.moveGroupGapTo(sourceGroupsEnd)
+        fromWriter.moveGroupGapTo(index = sourceGroupsEnd)
       }
       if (fromWriter.slotsGapStart < sourceSlotsEnd) {
-        fromWriter.moveSlotGapTo(sourceSlotsEnd, sourceGroupsEnd)
+        fromWriter.moveSlotGapTo(index = sourceSlotsEnd, group = sourceGroupsEnd)
       }
 
-      // Copy the groups and slots
+      // Copy the groups and slots.
+      // 그룹과 슬롯을 복사합니다.
       val groups = toWriter.groups
       val currentGroup = toWriter.currentGroup
+
       fromWriter.groups.copyInto(
         destination = groups,
         destinationOffset = currentGroup * Group_Fields_Size,
         startIndex = fromIndex * Group_Fields_Size,
         endIndex = sourceGroupsEnd * Group_Fields_Size,
       )
+
       val slots = toWriter.slots
       val currentSlot = toWriter.currentSlot
+
       fromWriter.slots.fastCopyInto(
         destination = slots,
         destinationOffset = currentSlot,
@@ -2633,75 +3363,97 @@ internal class SlotWriter(
 
       // Fix the parent anchors and data anchors. This would read better as two loops but
       // conflating the loops has better locality of reference.
+      //
+      // 부모 앵커와 데이터 앵커를 수정합니다. 두 개의 루프로 나누는 편이 읽기에는 더 좋지만,
+      // 하나로 합치는 것이 참조 지역성을 더 좋게 합니다.
       val parent = toWriter.parent
-      groups.updateParentAnchor(currentGroup, parent)
+
+      groups.updateParentAnchor(address = currentGroup, value = parent)
+
       val parentDelta = currentGroup - fromIndex
       val moveEnd = currentGroup + groupsToMove
-      val dataIndexDelta = currentSlot - with(toWriter) { groups.dataIndex(currentGroup) }
+      val dataIndexDelta = currentSlot - with(toWriter) { groups.dataIndex(address = currentGroup) }
       var slotsGapOwner = toWriter.slotsGapOwner
       val slotsGapLen = toWriter.slotsGapLen
       val slotsCapacity = slots.size
+
       for (groupAddress in currentGroup until moveEnd) {
         // Update the parent anchor, the first group has already been set.
+        // 부모 앵커를 갱신합니다. 첫 번째 그룹은 이미 설정되어 있습니다.
         if (groupAddress != currentGroup) {
-          val previousParent = groups.parentAnchor(groupAddress)
-          groups.updateParentAnchor(groupAddress, previousParent + parentDelta)
+          val previousParent = groups.parentAnchor(address = groupAddress)
+          groups.updateParentAnchor(address = groupAddress, value = previousParent + parentDelta)
         }
 
-        val newDataIndex =
-          with(toWriter) { groups.dataIndex(groupAddress) + dataIndexDelta }
+        val newDataIndex = with(toWriter) { groups.dataIndex(address = groupAddress) + dataIndexDelta }
         val newDataAnchor =
           with(toWriter) {
             dataIndexToDataAnchor(
-              newDataIndex,
+              index = newDataIndex,
               // Ensure that if the slotGapOwner is below groupAddress we get an end
-              // relative
-              // anchor
-              if (slotsGapOwner < groupAddress) 0 else slotsGapStart,
-              slotsGapLen,
-              slotsCapacity,
+              // relative anchor.
+              //
+              // slotGapOwner가 groupAddress보다 아래에 있으면 끝 기준 앵커가 되도록
+              // 보장합니다.
+              gapStart = if (slotsGapOwner < groupAddress) 0 else slotsGapStart,
+              gapLen = slotsGapLen,
+              capacity = slotsCapacity,
             )
           }
 
-        // Update the data index
-        groups.updateDataAnchor(groupAddress, newDataAnchor)
+        // Update the data index.
+        // 데이터 인덱스를 갱신합니다.
+        groups.updateDataAnchor(address = groupAddress, anchor = newDataAnchor)
 
-        // Move the slotGapOwner if necessary
+        // Move the slotGapOwner if necessary.
+        // 필요하다면 slotGapOwner를 이동합니다.
         if (groupAddress == slotsGapOwner) slotsGapOwner++
       }
+
       toWriter.slotsGapOwner = slotsGapOwner
 
-      // Extract the anchors in range
-      val startAnchors = fromWriter.anchors.anchorLocationOf(fromIndex, fromWriter.size)
-      val endAnchors = fromWriter.anchors.anchorLocationOf(sourceGroupsEnd, fromWriter.size)
+      // Extract the anchors in range.
+      // 해당 범위의 앵커를 추출합니다.
+      val startAnchors = fromWriter.anchors.anchorLocationOf(index = fromIndex, effectiveSize = fromWriter.size)
+      val endAnchors = fromWriter.anchors.anchorLocationOf(index = sourceGroupsEnd, effectiveSize = fromWriter.size)
       val anchors =
         if (startAnchors < endAnchors) {
           val sourceAnchors = fromWriter.anchors
-          val anchors = ArrayList<Anchor>(endAnchors - startAnchors)
+          val anchors = ArrayList<Anchor>(/* initialCapacity = */ endAnchors - startAnchors)
 
-          // update the anchor locations to their new location
+          // update the anchor locations to their new location.
+          // 앵커 위치를 새로운 위치로 갱신합니다.
           val anchorDelta = currentGroup - fromIndex
+
           for (anchorIndex in startAnchors until endAnchors) {
             val sourceAnchor = sourceAnchors[anchorIndex]
             sourceAnchor.location += anchorDelta
             anchors.add(sourceAnchor)
           }
 
-          // Insert them into the new table
+          // Insert them into the new table.
+          // 새 테이블에 삽입합니다.
           val insertLocation =
-            toWriter.anchors.anchorLocationOf(toWriter.currentGroup, toWriter.size)
+            toWriter.anchors.anchorLocationOf(index = toWriter.currentGroup, effectiveSize = toWriter.size)
+
           toWriter.anchors.addAll(insertLocation, anchors)
 
-          // Remove them from the old table
+          // Remove them from the old table.
+          // 이전 테이블에서 제거합니다.
           sourceAnchors.subList(startAnchors, endAnchors).clear()
 
           anchors
-        } else emptyList()
+        }
 
-      // Move any source information from the source table to the destination table
+        // startAnchors >= endAnchors
+        else emptyList()
+
+      // Move any source information from the source table to the destination table.
+      // 원본 테이블의 소스 정보를 대상 테이블로 이동합니다.
       if (anchors.isNotEmpty()) {
         val sourceSourceInformationMap = fromWriter.sourceInformationMap
         val destinationSourceInformation = toWriter.sourceInformationMap
+
         if (sourceSourceInformationMap != null && destinationSourceInformation != null) {
           anchors.fastForEach { anchor ->
             val information = sourceSourceInformationMap[anchor]
@@ -2713,40 +3465,57 @@ internal class SlotWriter(
         }
       }
 
-      // Record the new group in the parent information
+      // Record the new group in the parent information.
+      // 부모 정보에 새로운 그룹을 기록합니다.
       val toWriterParent = toWriter.parent
-      toWriter.sourceInformationOf(parent)?.let {
+
+      toWriter.sourceInformationOf(group = parent)?.let { sourceInformation ->
         var predecessor = -1
         var child = toWriterParent + 1
         val endGroup = toWriter.currentGroup
+
         while (child < endGroup) {
           predecessor = child
-          child += toWriter.groups.groupSize(child)
+          child += toWriter.groups.groupSize(address = child)
         }
-        it.addGroupAfter(toWriter, predecessor, endGroup)
+
+        sourceInformation.addGroupAfter(
+          writer = toWriter,
+          predecessor = predecessor,
+          group = endGroup,
+        )
       }
-      val parentGroup = fromWriter.parent(fromIndex)
+
+      val parentGroup = fromWriter.parent(index = fromIndex)
       val anchorsRemoved =
         if (!removeSourceGroup) {
           // e.g.: we can skip groups removal for insertTable of Composer because
-          // it's going to be disposed anyway after changes applied
+          // it's going to be disposed anyway after changes applied.
+          //
+          // 예: Composer의 insertTable에서는 그룹 제거를 건너뛸 수 있습니다.
+          // change가 적용된 후 어차피 폐기되기 때문입니다.
           false
         } else if (updateFromCursor) {
           // Remove the group using the sequence the writer expects when removing a group,
-          // that
-          // is the root group and the group's parent group must be correctly started and
-          // ended
-          // when it is not a root group.
+          // that is the root group and the group's parent group must be correctly started and
+          // ended when it is not a root group.
+          //
+          // 작성자가 그룹을 제거할 때 기대하는 순서로 그룹을 제거합니다. 즉, 루트 그룹이 아니면
+          // 루트 그룹과 해당 그룹의 부모 그룹이 올바르게 시작되고 종료되어야 합니다.
           val needsStartGroups = parentGroup >= 0
           if (needsStartGroups) {
             // If we are not a root group then we are removing from a group so ensure
-            // the
-            // root group is started and then seek to the parent group and start it.
+            // the root group is started and then seek to the parent group and start it.
+            //
+            // 루트 그룹이 아니라면 다른 그룹에서 제거하는 것이므로, 루트 그룹이 시작되었는지
+            // 확인한 뒤 부모 그룹으로 이동하여 부모 그룹을 시작해야 합니다.
             fromWriter.startGroup()
-            fromWriter.advanceBy(parentGroup - fromWriter.currentGroup)
+            fromWriter.advanceBy(amount = parentGroup - fromWriter.currentGroup)
             fromWriter.startGroup()
           }
-          fromWriter.advanceBy(fromIndex - fromWriter.currentGroup)
+
+          fromWriter.advanceBy(amount = fromIndex - fromWriter.currentGroup)
+
           val anchorsRemoved = fromWriter.removeGroup()
           if (needsStartGroups) {
             fromWriter.skipToGroupEnd()
@@ -2754,30 +3523,45 @@ internal class SlotWriter(
             fromWriter.skipToGroupEnd()
             fromWriter.endGroup()
           }
+
           anchorsRemoved
         } else {
           // Remove the group directly instead of using cursor operations.
-          val anchorsRemoved = fromWriter.removeGroups(fromIndex, groupsToMove)
-          fromWriter.removeSlots(sourceSlotsStart, slotsToMove, fromIndex - 1)
+          // 커서 연산을 사용하지 않고 직접 그룹을 제거합니다.
+          val anchorsRemoved = fromWriter.removeGroups(start = fromIndex, len = groupsToMove)
+
+          fromWriter.removeSlots(
+            start = sourceSlotsStart,
+            len = slotsToMove,
+            group = fromIndex - 1,
+          )
+
           anchorsRemoved
         }
 
       // Ensure we correctly do not remove anchors with the above delete.
-      runtimeCheck(!anchorsRemoved) { "Unexpectedly removed anchors" }
+      // 위의 삭제 과정에서 앵커가 잘못 제거되지 않았는지 확인합니다.
+      runtimeCheck(!anchorsRemoved) {
+        // 예상치 않게 앵커가 제거되었습니다.
+        "Unexpectedly removed anchors"
+      }
 
-      // Update the node count in the toWriter
+      // Update the node count in the toWriter.
+      // toWriter 안에서 노드 개수를 갱신합니다.
       toWriter.nodeCount +=
-        if (groups.isNode(currentGroup)) 1 else groups.nodeCount(currentGroup)
+        if (groups.isNode(address = currentGroup)) 1 else groups.nodeCount(address = currentGroup)
 
-      // Move the toWriter's currentGroup passed the insert
+      // Move the toWriter's currentGroup passed the insert.
+      // toWriter의 currentGroup을 삽입이 끝난 위치로 이동합니다.
       if (updateToCursor) {
         toWriter.currentGroup = currentGroup + groupsToMove
         toWriter.currentSlot = currentSlot + slotsToMove
       }
 
-      // If the group being inserted has marks then update the toWriter's parent marks
+      // If the group being inserted has marks then update the toWriter's parent marks.
+      // 삽입되는 그룹에 mark가 있으면 toWriter의 부모 mark를 갱신합니다.
       if (hasMarks) {
-        toWriter.updateContainsMark(parent)
+        toWriter.updateContainsMark(group = parent)
       }
 
       return anchors
@@ -2790,17 +3574,27 @@ internal class SlotWriter(
    * be a group contained in the current started group.
    *
    * This requires [writer] be inserting and this writer to not be inserting.
+   *
+   *
+   * [anchor] 그룹을 [writer]의 현재 삽입 위치로 이동합니다(삽입 후 삭제). 그룹에 있는 모든
+   * 앵커를 [writer]의 슬롯 테이블로 옮깁니다. [anchor]는 현재 시작된 그룹에 포함된 그룹이어야
+   * 합니다.
+   *
+   * 이를 위해 [writer]는 삽입 중이어야 하고, 이 writer는 삽입 중이 아니어야 합니다.
    */
   fun moveTo(anchor: Anchor, offset: Int, writer: SlotWriter): List<Anchor> {
     runtimeCheck(writer.insertCount > 0)
     runtimeCheck(insertCount == 0)
     runtimeCheck(anchor.valid)
-    val location = anchorIndex(anchor) + offset
+
+    val location = anchorIndex(anchor = anchor) + offset
     val currentGroup = currentGroup
+
     runtimeCheck(location in currentGroup until currentGroupEnd)
-    val parent = parent(location)
-    val size = groupSize(location)
-    val nodes = if (isNode(location)) 1 else nodeCount(location)
+
+    val parent = parent(index = location)
+    val size = groupSize(index = location)
+    val nodes = if (isNode(index = location)) 1 else nodeCount(index = location)
     val result =
       moveGroup(
         fromWriter = this,
@@ -2810,21 +3604,33 @@ internal class SlotWriter(
         updateToCursor = false,
       )
 
-    updateContainsMark(parent)
+    updateContainsMark(group = parent)
 
-    // Fix group sizes and node counts from the parent of the moved group to the current group
+    // Fix group sizes and node counts from the parent of the moved group to the current group.
+    // 이동된 그룹의 부모부터 현재 그룹까지 그룹 크기와 노드 수를 수정합니다.
     var current = parent
     var updatingNodes = nodes > 0
+
     while (current >= currentGroup) {
-      val currentAddress = groupIndexToAddress(current)
-      groups.updateGroupSize(currentAddress, groups.groupSize(currentAddress) - size)
+      val currentAddress = groupIndexToAddress(index = current)
+      groups.updateGroupSize(
+        address = currentAddress,
+        value = groups.groupSize(address = currentAddress) - size,
+      )
+
       if (updatingNodes) {
-        if (groups.isNode(currentAddress)) updatingNodes = false
+        if (groups.isNode(address = currentAddress))
+          updatingNodes = false
         else
-          groups.updateNodeCount(currentAddress, groups.nodeCount(currentAddress) - nodes)
+          groups.updateNodeCount(
+            address = currentAddress,
+            value = groups.nodeCount(address = currentAddress) - nodes,
+          )
       }
-      current = parent(current)
+
+      current = parent(index = current)
     }
+
     if (updatingNodes) {
       runtimeCheck(nodeCount >= nodes)
       nodeCount -= nodes
@@ -2839,7 +3645,15 @@ internal class SlotWriter(
    *
    * It is required that the writer be inserting.
    *
-   * @return a list of the anchors that were moved
+   * @return a list of the anchors that were moved.
+   *
+   *
+   * [index] 위치의 그룹을 [slots]에서 이동합니다(삽입 후 삭제). 해당 범위([index] 포함)의
+   * 모든 앵커를 이 리더가 참조하는 슬롯 테이블로 옮깁니다.
+   *
+   * writer는 삽입 중이어야 합니다.
+   *
+   * @return 이동된 앵커들의 목록을 반환합니다.
    */
   fun moveFrom(table: SlotTable, index: Int, removeSourceGroup: Boolean = true): List<Anchor> {
     runtimeCheck(insertCount > 0)
@@ -2848,10 +3662,13 @@ internal class SlotWriter(
       index == 0 &&
       currentGroup == 0 &&
       this.table.groupsSize == 0 &&
-      table.groups.groupSize(index) == table.groupsSize
+      table.groups.groupSize(address = index) == table.groupsSize
     ) {
       // Special case for moving the entire slot table into an empty table. This case occurs
       // during initial composition.
+      //
+      // 빈 테이블로 전체 슬롯 테이블을 이동하는 특수 사례입니다. 이는 초기 컴포지션 동안
+      // 발생합니다.
       val myGroups = groups
       val mySlots = slots
       val myAnchors = anchors
@@ -2863,6 +3680,7 @@ internal class SlotWriter(
       val slotsSize = table.slotsSize
       val sourceInformation = table.sourceInformationMap
       val callInformation = table.calledByMap
+
       this.groups = groups
       this.slots = slots
       this.anchors = table.anchors
@@ -2874,15 +3692,24 @@ internal class SlotWriter(
       this.sourceInformationMap = sourceInformation
       this.calledByMap = callInformation
 
-      table.setTo(myGroups, 0, mySlots, 0, myAnchors, mySourceInformation, myCallInformation)
+      table.setTo(
+        groups = myGroups,
+        groupsSize = 0,
+        slots = mySlots,
+        slotsSize = 0,
+        anchors = myAnchors,
+        sourceInformationMap = mySourceInformation,
+        calledByMap = myCallInformation,
+      )
+
       return this.anchors
     }
 
-    return table.write { tableWriter ->
+    return table.write { writer ->
       moveGroup(
-        tableWriter,
-        index,
-        this,
+        fromWriter = writer,
+        fromIndex = index,
+        toWriter = this,
         updateFromCursor = true,
         updateToCursor = true,
         removeSourceGroup = removeSourceGroup,
@@ -2898,9 +3725,17 @@ internal class SlotWriter(
    * and the slot table information does not match the expectations of the new code. This is done
    * conservatively in that any change in the code is assume to make the state stored in the table
    * incompatible.
+   *
+   *
+   * 현재 그룹의 키를 기존 값과 일치하지 않는 키로 바꿉니다. 그러면 컴포저가 이를 버리고 내용을
+   * 다시 빌드합니다.
+   *
+   * LiveEdit 중, 콘텐츠를 생성한 함수가 변경되어 슬롯 테이블 정보가 새 코드의 기대와 맞지 않을 때
+   * 사용합니다. 보수적으로 처리하여, 코드의 어떤 변경도 테이블에 저장된 상태를 호환 불가로 만든다고
+   * 가정합니다.
    */
   fun bashCurrentGroup() {
-    groups.updateGroupKey(currentGroup, LIVE_EDIT_INVALID_KEY)
+    groups.updateGroupKey(address = currentGroup, key = LIVE_EDIT_INVALID_KEY)
   }
 
   /**
@@ -2910,108 +3745,159 @@ internal class SlotWriter(
    * It is required that the writer is *not* inserting and the [currentGroup] is empty.
    *
    * @return a list of the anchors that were moved.
+   *
+   *
+   * [currentGroup]는 이동하지 않고, [table]의 [index] 위치 그룹을 [currentGroup] + [offset]의
+   * 콘텐츠로 삽입합니다.
+   *
+   * writer는 삽입 중이 아니어야 하고, [currentGroup]은 비어 있어야 합니다.
+   *
+   * @return 이동된 앵커들의 목록을 반환합니다.
    */
   fun moveIntoGroupFrom(offset: Int, table: SlotTable, index: Int): List<Anchor> {
     runtimeCheck(insertCount <= 0 && groupSize(currentGroup + offset) == 1)
+
     val previousCurrentGroup = currentGroup
     val previousCurrentSlot = currentSlot
     val previousCurrentSlotEnd = currentSlotEnd
-    advanceBy(offset)
+
+    advanceBy(amount = offset)
     startGroup()
     beginInsert()
-    val anchors =
-      table.write { tableWriter ->
-        moveGroup(tableWriter, index, this, updateFromCursor = false, updateToCursor = true)
-      }
+
+    val anchors = table.write { writer ->
+      moveGroup(
+        fromWriter = writer,
+        fromIndex = index,
+        toWriter = this,
+        updateFromCursor = false,
+        updateToCursor = true,
+      )
+    }
+
     endInsert()
     endGroup()
+
     currentGroup = previousCurrentGroup
     currentSlot = previousCurrentSlot
     currentSlotEnd = previousCurrentSlotEnd
+
     return anchors
   }
 
-  /** Allocate an anchor to the current group or [index]. */
+  /**
+   * Allocate an anchor to the current group or [index].
+   *
+   * 현재 그룹 또는 [index]에 대한 앵커를 할당합니다.
+   */
   fun anchor(index: Int = currentGroup): Anchor =
-    anchors.getOrAdd(index, size) {
-      Anchor(if (index <= groupGapStart) index else -(size - index))
+    anchors.getOrAdd(index = index, effectiveSize = size) {
+      Anchor(location = if (index <= groupGapStart) index else -(size - index))
     }
 
   fun markGroup(group: Int = parent) {
-    val groupAddress = groupIndexToAddress(group)
-    if (!groups.hasMark(groupAddress)) {
-      groups.updateMark(groupAddress, true)
-      if (!groups.containsMark(groupAddress)) {
+    val groupAddress = groupIndexToAddress(index = group)
+
+    if (!groups.hasMark(address = groupAddress)) {
+      groups.updateMark(address = groupAddress, value = true)
+
+      if (!groups.containsMark(address = groupAddress)) {
         // This is a new mark, record the parent needs to update its contains mark.
-        updateContainsMark(parent(group))
+        // 새로운 mark입니다. 부모가 contains mark를 갱신하도록 기록합니다.
+        updateContainsMark(group = parent(index = group))
       }
     }
   }
 
-  private fun containsGroupMark(group: Int) =
-    group >= 0 && groups.containsMark(groupIndexToAddress(group))
+  private fun containsGroupMark(group: Int): Boolean =
+    group >= 0 && groups.containsMark(address = groupIndexToAddress(index = group))
 
-  private fun containsAnyGroupMarks(group: Int) =
-    group >= 0 && groups.containsAnyMark(groupIndexToAddress(group))
+  private fun containsAnyGroupMarks(group: Int): Boolean =
+    group >= 0 && groups.containsAnyMark(address = groupIndexToAddress(index = group))
 
   private var pendingRecalculateMarks: PrioritySet? = null
 
   private fun recalculateMarks() {
-    pendingRecalculateMarks?.let { set ->
-      while (set.isNotEmpty()) {
-        updateContainsMarkNow(set.takeMax(), set)
+    pendingRecalculateMarks?.let { marks ->
+      while (marks.isNotEmpty()) {
+        updateContainsMarkNow(group = marks.takeMax(), set = marks)
       }
     }
   }
 
   private fun updateContainsMark(group: Int) {
     if (group >= 0) {
-      (pendingRecalculateMarks ?: PrioritySet().also { pendingRecalculateMarks = it }).add(
-        group
-      )
+      (pendingRecalculateMarks ?: PrioritySet().also { pendingRecalculateMarks = it })
+        .add(value = group)
     }
   }
 
+  // group의 자식 중에 마크가 있다면, group 자체에도 마크가 있다고 업데이트함
   private fun updateContainsMarkNow(group: Int, set: PrioritySet) {
-    val groupAddress = groupIndexToAddress(group)
-    val containsAnyMarks = childContainsAnyMarks(group)
-    val markChanges = groups.containsMark(groupAddress) != containsAnyMarks
+    val groupAddress = groupIndexToAddress(index = group)
+    val containsAnyMarks = childContainsAnyMarks(group = group)
+    val markChanges = groups.containsMark(address = groupAddress) != containsAnyMarks
+
     if (markChanges) {
-      groups.updateContainsMark(groupAddress, containsAnyMarks)
-      val parent = parent(group)
+      groups.updateContainsMark(address = groupAddress, value = containsAnyMarks)
+
+      val parent = parent(index = group)
       if (parent >= 0) set.add(parent)
     }
   }
 
   private fun childContainsAnyMarks(group: Int): Boolean {
     var child = group + 1
-    val end = group + groupSize(group)
+    val end = group + groupSize(index = group)
+
     while (child < end) {
-      if (groups.containsAnyMark(groupIndexToAddress(child))) return true
-      child += groupSize(child)
+      if (groups.containsAnyMark(address = groupIndexToAddress(index = child)))
+        return true
+
+      child += groupSize(index = child)
     }
+
     return false
   }
 
-  /** Return the current anchor location while changing the slot table. */
-  fun anchorIndex(anchor: Anchor) = anchor.location.let { if (it < 0) size + it else it }
+  /**
+   * Return the current anchor location while changing the slot table.
+   *
+   * 슬롯 테이블을 변경하는 동안 현재 앵커 위치를 반환합니다.
+   */
+  fun anchorIndex(anchor: Anchor): Int =
+    anchor.location.let { loc -> if (loc < 0) size + loc else loc }
 
-  override fun toString(): String {
-    return "SlotWriter(current = $currentGroup end=$currentGroupEnd size = $size " +
-      "gap=$groupGapStart-${groupGapStart + groupGapLen})"
-  }
+  override fun toString(): String =
+    "SlotWriter(" +
+      "current=$currentGroup, " +
+      "end=$currentGroupEnd, " +
+      "size=$size, " +
+      "gap=$groupGapStart-${groupGapStart + groupGapLen}" +
+      ")"
 
-  /** Save [currentGroupEnd] to [endStack]. */
+  /**
+   * Save [currentGroupEnd] to [endStack].
+   *
+   * [currentGroupEnd]를 [endStack]에 저장합니다.
+   */
   private fun saveCurrentGroupEnd() {
     // Record the end location as relative to the end of the slot table so when we pop it
     // back off again all inserts and removes that happened while a child group was open
     // are already reflected into its value.
-    endStack.push(capacity - groupGapLen - currentGroupEnd)
+    //
+    // 끝 위치를 슬롯 테이블의 끝을 기준으로 기록합니다. 이렇게 하면 자식 그룹이 열려 있는
+    // 동안 발생한 모든 삽입과 제거가, 다시 pop될 때 이미 그 값에 반영되어 있습니다.
+    endStack.push(size - currentGroupEnd)
   }
 
-  /** Restore [currentGroupEnd] from [endStack]. */
+  /**
+   * Restore [currentGroupEnd] from [endStack].
+   *
+   * [endStack]에서 [currentGroupEnd]를 복원합니다.
+   */
   private fun restoreCurrentGroupEnd(): Int {
-    val newGroupEnd = (capacity - groupGapLen) - endStack.pop()
+    val newGroupEnd = size - endStack.pop()
     currentGroupEnd = newGroupEnd
     return newGroupEnd
   }
@@ -3020,33 +3906,63 @@ internal class SlotWriter(
    * As groups move their parent anchors need to be updated. This recursively updates the parent
    * anchors [parent] starting at [firstChild] and ending at [endGroup]. These are passed as a
    * parameter to as the [groups] does not contain the current values for [parent] yet.
+   *
+   * 그룹이 이동하면 부모 앵커를 갱신해야 합니다. [firstChild]에서 시작해 [endGroup]까지 부모 앵커
+   * [parent]를 재귀적으로 갱신합니다. [groups]에는 아직 [parent]의 최신 값이 없으므로 이를 매개변수로
+   * 전달합니다.
    */
   private fun fixParentAnchorsFor(parent: Int, endGroup: Int, firstChild: Int) {
-    val parentAnchor = parentIndexToAnchor(parent, groupGapStart)
+    val parentAnchor = parentIndexToAnchor(index = parent, gapStart = groupGapStart)
     var child = firstChild
+
     while (child < endGroup) {
-      groups.updateParentAnchor(groupIndexToAddress(child), parentAnchor)
-      val childEnd = child + groups.groupSize(groupIndexToAddress(child))
-      fixParentAnchorsFor(child, childEnd, child + 1)
+      groups.updateParentAnchor(
+        address = groupIndexToAddress(index = child),
+        value = parentAnchor,
+      )
+
+      val childEnd = child + groups.groupSize(address = groupIndexToAddress(index = child))
+
+      fixParentAnchorsFor(
+        parent = child,
+        endGroup = childEnd,
+        firstChild = child + 1,
+      )
+
       child = childEnd
     }
   }
 
-  /** Move the gap in [groups] to [index]. */
+  /**
+   * Move the gap in [groups] to [index].
+   *
+   * [groups]에서 gap을 [index]로 이동합니다.
+   */
   private fun moveGroupGapTo(index: Int) {
     val gapLen = groupGapLen
     val gapStart = groupGapStart
+
     if (gapStart != index) {
-      if (anchors.isNotEmpty()) updateAnchors(gapStart, index)
+      if (anchors.isNotEmpty())
+        updateAnchors(previousGapStart = gapStart, newGapStart = index)
+
       if (gapLen > 0) {
         val groups = groups
+
         // Here physical is used to mean an index of the actual first int of the group in
-        // the
-        // array as opposed ot the logical address which is in groups of Group_Field_Size
+        // the array as opposed to the logical address which is in groups of Group_Field_Size
         // integers. IntArray.copyInto expects physical indexes.
+        //
+        // opposed to: ~에 반대하는
+        //
+        // 여기서 physical은 그룹의 실제 첫 번째 정수가 배열에서 차지하는 인덱스를 의미합니다.
+        // 이는 Group_Field_Size 단위로 묶인 논리적 주소와는 다릅니다. IntArray.copyInto는
+        // 물리적(physical) 인덱스를 기대합니다.
         val groupPhysicalAddress = index * Group_Fields_Size
         val groupPhysicalGapLen = gapLen * Group_Fields_Size
         val groupPhysicalGapStart = gapStart * Group_Fields_Size
+
+        // index 위치에 이미 슬롯이 있음 -> 슬롯을 위로 올려야 함
         if (index < gapStart) {
           groups.copyInto(
             destination = groups,
@@ -3054,7 +3970,11 @@ internal class SlotWriter(
             startIndex = groupPhysicalAddress,
             endIndex = groupPhysicalGapStart,
           )
-        } else {
+        }
+
+        // index > gapStart
+        // index 위치에 gap이 없음(이미 슬롯이 있음) -> 슬롯을 아래로 내려야 함
+        else {
           groups.copyInto(
             destination = groups,
             destinationOffset = groupPhysicalGapStart,
@@ -3066,116 +3986,181 @@ internal class SlotWriter(
 
       // Gap has moved so the anchor for the groups that moved have changed so the parent
       // anchors that refer to these groups must be updated.
+      //
+      // gap이 이동했으므로 이동된 그룹들의 앵커가 변경되었고, 따라서 이 그룹들을 참조하는
+      // 부모 앵커들도 갱신해야 합니다.
       var groupAddress = if (index < gapStart) index + gapLen else gapStart
       val capacity = capacity
+
       runtimeCheck(groupAddress < capacity)
+
       while (groupAddress < capacity) {
-        val oldAnchor = groups.parentAnchor(groupAddress)
-        val oldIndex = parentAnchorToIndex(oldAnchor)
-        val newAnchor = parentIndexToAnchor(oldIndex, index)
+        val oldAnchor = groups.parentAnchor(address = groupAddress)
+        val oldIndex = parentAnchorToIndex(index = oldAnchor)
+        val newAnchor = parentIndexToAnchor(index = oldIndex, gapStart = index)
+
         if (newAnchor != oldAnchor) {
-          groups.updateParentAnchor(groupAddress, newAnchor)
+          groups.updateParentAnchor(address = groupAddress, value = newAnchor)
         }
+
         groupAddress++
+
         if (groupAddress == index) groupAddress += gapLen
       }
     }
+
     this.groupGapStart = index
   }
 
   /**
    * Move the gap in [slots] to [index] where [group] is expected to receive any new slots added.
+   *
+   * [slots]에서 gap을 [index]로 옮겨, [group]이 추가되는 새 슬롯을 받을 수 있도록 합니다.
    */
   private fun moveSlotGapTo(index: Int, group: Int) {
     val gapLen = slotsGapLen
     val gapStart = slotsGapStart
     val slotsGapOwner = slotsGapOwner
+
     if (gapStart != index) {
       val slots = slots
+
       if (index < gapStart) {
         // move the gap down to index by shifting the data up.
+        // 데이터를 위로 이동시켜 gap을 인덱스까지 아래로 내립니다.
+        //
+        // gap을 밑의 index까지 내리고, 기존 index 위치에 있던 데이터를 위로 올림
         slots.fastCopyInto(
           destination = slots,
           destinationOffset = index + gapLen,
           startIndex = index,
           endIndex = gapStart,
         )
-      } else {
-        // Shift the data down, leaving the gap at index
+      }
+
+      // index > gapStart
+      else {
+        // Shift the data down, leaving the gap at index.
+        // 데이터를 아래로 이동시켜 gap을 인덱스에 남겨 둡니다.
+        //
+        // gap을 위의 index까지 올리고, 기존 index 위치에 있던 데이터를 아래로 내림
         slots.fastCopyInto(
           destination = slots,
-          destinationOffset = gapStart,
-          startIndex = gapStart + gapLen,
-          endIndex = index + gapLen,
+          destinationOffset = gapStart, // 빈 공간으로 데이터를 내려야 함
+          startIndex = gapStart + gapLen, // gap 바로 뒤에 있던 데이터부터
+          endIndex = index + gapLen, // 기존 index 위치에 있던 데이터들을 옮김
         )
       }
     }
 
-    // Update the data anchors affected by the move
+    // Update the data anchors affected by the move.
+    // 이동의 영향을 받는 데이터 앵커를 갱신합니다.
     val newSlotsGapOwner = min(group + 1, size)
+
     if (slotsGapOwner != newSlotsGapOwner) {
       val slotsSize = slots.size - gapLen
+
       if (newSlotsGapOwner < slotsGapOwner) {
-        var updateAddress = groupIndexToAddress(newSlotsGapOwner)
-        val stopUpdateAddress = groupIndexToAddress(slotsGapOwner)
+        var updateAddress = groupIndexToAddress(index = newSlotsGapOwner)
+        val stopUpdateAddress = groupIndexToAddress(index = slotsGapOwner)
         val groupGapStart = groupGapStart
+
         while (updateAddress < stopUpdateAddress) {
-          val anchor = groups.dataAnchor(updateAddress)
+          val anchor = groups.dataAnchor(address = updateAddress)
+
           runtimeCheck(anchor >= 0) {
+            // 예상치 못한 앵커 값입니다. 양수 앵커가 예상되었습니다.
             "Unexpected anchor value, expected a positive anchor"
           }
-          groups.updateDataAnchor(updateAddress, -(slotsSize - anchor + 1))
+
+          groups.updateDataAnchor(
+            address = updateAddress,
+            anchor = -(slotsSize - anchor + 1),
+          )
+
           updateAddress++
-          if (updateAddress == groupGapStart) updateAddress += groupGapLen
-        }
-      } else {
-        var updateAddress = groupIndexToAddress(slotsGapOwner)
-        val stopUpdateAddress = groupIndexToAddress(newSlotsGapOwner)
-        while (updateAddress < stopUpdateAddress) {
-          val anchor = groups.dataAnchor(updateAddress)
-          runtimeCheck(anchor < 0) {
-            "Unexpected anchor value, expected a negative anchor"
-          }
-          groups.updateDataAnchor(updateAddress, slotsSize + anchor + 1)
-          updateAddress++
-          if (updateAddress == groupGapStart) updateAddress += groupGapLen
+
+          if (updateAddress == groupGapStart)
+            updateAddress += groupGapLen
         }
       }
+
+      // newSlotsGapOwner > slotsGapOwner
+      else {
+        var updateAddress = groupIndexToAddress(index = slotsGapOwner)
+        val stopUpdateAddress = groupIndexToAddress(index = newSlotsGapOwner)
+
+        while (updateAddress < stopUpdateAddress) {
+          val anchor = groups.dataAnchor(address = updateAddress)
+
+          runtimeCheck(anchor < 0) {
+            // 예상치 못한 앵커 값입니다. 음수 앵커가 예상되었습니다.
+            "Unexpected anchor value, expected a negative anchor"
+          }
+
+          groups.updateDataAnchor(
+            address = updateAddress,
+            anchor = slotsSize + anchor + 1,
+          )
+
+          updateAddress++
+
+          if (updateAddress == groupGapStart)
+            updateAddress += groupGapLen
+        }
+      }
+
       this.slotsGapOwner = newSlotsGapOwner
     }
+
     this.slotsGapStart = index
   }
 
   private fun clearSlotGap() {
     val slotsGapStart = slotsGapStart
     val slotsGapEnd = slotsGapStart + slotsGapLen
-    slots.fill(null, slotsGapStart, slotsGapEnd)
+
+    slots.fill(
+      element = null,
+      fromIndex = slotsGapStart,
+      toIndex = slotsGapEnd,
+    )
   }
 
   /**
    * Insert [size] number of groups in front of [currentGroup]. These groups are implicitly a
    * child of [parent].
+   *
+   * [currentGroup] 앞에 [size] 개의 그룹을 삽입합니다. 이 그룹들은 암시적으로 [parent]의
+   * 자식이 됩니다.
    */
   private fun insertGroups(size: Int) {
     if (size > 0) {
       val currentGroup = currentGroup
-      moveGroupGapTo(currentGroup)
+
+      moveGroupGapTo(index = currentGroup)
+
       val gapStart = groupGapStart
       var gapLen = groupGapLen
-      val oldCapacity = groups.size / Group_Fields_Size
-      val oldSize = oldCapacity - gapLen
+      val oldCapacity = capacity
+      val oldSize = this.size
+
       if (gapLen < size) {
-        // Create a bigger gap
+        // Create a bigger gap.
+        // 더 큰 gap을 생성합니다.
         val groups = groups
 
-        // Double the size of the array, but at least MinGrowthSize and >= size
+        // Double the size of the array, but at least MinGrowthSize and >= size.
+        // 배열 크기를 두 배로 늘리되, 최소한 MinGrowthSize 이상이고 size보다 크거나 같아야 합니다.
         val newCapacity = max(max(oldCapacity * 2, oldSize + size), MinGroupGrowthSize)
         val newGroups = IntArray(newCapacity * Group_Fields_Size)
         val newGapLen = newCapacity - oldSize
+
         val oldGapEndAddress = gapStart + gapLen
         val newGapEndAddress = gapStart + newGapLen
 
-        // Copy the old arrays into the new arrays
+        // Copy the old arrays into the new arrays.
+        // 이전 배열들을 새 배열에 복사합니다.
         groups.copyInto(
           destination = newGroups,
           destinationOffset = 0,
@@ -3189,33 +4174,41 @@ internal class SlotWriter(
           endIndex = oldCapacity * Group_Fields_Size,
         )
 
-        // Update the gap and slots
+        // Update the gap and slots.
+        // gap과 슬롯을 갱신합니다.
         this.groups = newGroups
         gapLen = newGapLen
       }
 
       // Move the currentGroupEnd to account for inserted groups.
+      // 삽입된 그룹을 반영하기 위해 currentGroupEnd를 이동합니다.
       val currentEnd = currentGroupEnd
-      if (currentEnd >= gapStart) this.currentGroupEnd = currentEnd + size
+      if (currentEnd >= gapStart)
+        this.currentGroupEnd = currentEnd + size
 
-      // Update the gap start and length
+      // Update the gap start and length.
+      // gap 시작 위치와 길이를 갱신합니다.
       this.groupGapStart = gapStart + size
       this.groupGapLen = gapLen - size
 
-      // Replicate the current group data index to the new slots
-      val index = if (oldSize > 0) dataIndex(currentGroup + size) else 0
+      // Replicate the current group data index to the new slots.
+      // 현재 그룹 데이터 인덱스를 새 슬롯에 복제합니다.
+      val index = if (oldSize > 0) dataIndex(index = currentGroup + size) else 0
 
-      // If the slotGapOwner is before the current location ensure we get end relative offsets
+      // If the slotGapOwner is before the current location ensure we get end relative offsets.
+      // slotGapOwner가 현재 위치보다 앞에 있으면 끝 기준 오프셋을 얻도록 합니다.
       val anchor =
         dataIndexToDataAnchor(
-          index,
-          if (slotsGapOwner < gapStart) 0 else slotsGapStart,
-          slotsGapLen,
-          slots.size,
+          index = index,
+          gapStart = if (slotsGapOwner < gapStart) 0 else slotsGapStart,
+          gapLen = slotsGapLen,
+          capacity = slots.size,
         )
+
       for (groupAddress in gapStart until gapStart + size) {
-        groups.updateDataAnchor(groupAddress, anchor)
+        groups.updateDataAnchor(address = groupAddress, anchor = anchor)
       }
+
       val slotsGapOwner = slotsGapOwner
       if (slotsGapOwner >= gapStart) {
         this.slotsGapOwner = slotsGapOwner + size
@@ -3227,27 +4220,38 @@ internal class SlotWriter(
    * Insert room into the slot table. This is performed by first moving the gap to [currentSlot]
    * and then reducing the gap [size] slots. If the gap is smaller than [size] the gap is grown to
    * at least accommodate [size] slots. The new slots are associated with [group].
+   *
+   * 슬롯 테이블에 공간을 삽입합니다. 이를 위해 먼저 gap을 [currentSlot]으로 옮긴 뒤, gap에서 [size]
+   * 개수만큼 슬롯을 줄입니다. gap이 [size]보다 작으면 최소한 [size] 슬롯을 수용할 수 있도록 gap을
+   * 확장합니다. 새 슬롯들은 [group]에 연결됩니다.
    */
+  // MEMO 기존 gap을 slot으로 사용하거나, 새로운 gap을 추가함과 동시에 slot으로 사용하는 로직
   private fun insertSlots(size: Int, group: Int) {
     if (size > 0) {
-      moveSlotGapTo(currentSlot, group)
+      moveSlotGapTo(index = currentSlot, group = group)
+
       val gapStart = slotsGapStart
       var gapLen = slotsGapLen
+
       if (gapLen < size) {
         val slots = slots
 
-        // Create a bigger gap
+        // Create a bigger gap.
+        // 더 큰 gap을 생성합니다.
         val oldCapacity = slots.size
         val oldSize = oldCapacity - gapLen
 
-        // Double the size of the array, but at least MinGrowthSize and >= size
+        // Double the size of the array, but at least MinGrowthSize and >= size.
+        // 배열 크기를 두 배로 늘리되, 최소한 MinGrowthSize 이상이고 size보다 크거나 같게 합니다.
         val newCapacity = max(max(oldCapacity * 2, oldSize + size), MinSlotsGrowthSize)
         val newData = Array<Any?>(newCapacity) { null }
+
         val newGapLen = newCapacity - oldSize
         val oldGapEndAddress = gapStart + gapLen
         val newGapEndAddress = gapStart + newGapLen
 
-        // Copy the old arrays into the new arrays
+        // Copy the old arrays into the new arrays.
+        // 이전 배열들을 새 배열에 복사합니다.
         slots.fastCopyInto(
           destination = newData,
           destinationOffset = 0,
@@ -3261,105 +4265,175 @@ internal class SlotWriter(
           endIndex = oldCapacity,
         )
 
-        // Update the gap and slots
+        // Update the gap and slots.
+        // gap과 슬롯을 갱신합니다.
         this.slots = newData
         gapLen = newGapLen
       }
+
       val currentDataEnd = currentSlotEnd
-      if (currentDataEnd >= gapStart) this.currentSlotEnd = currentDataEnd + size
+      if (currentDataEnd >= gapStart)
+        this.currentSlotEnd = currentDataEnd + size
+
+      // size 만큼 슬롯이 삽입되었으므로, gap 범위 오프셋을 조정함
       this.slotsGapStart = gapStart + size
       this.slotsGapLen = gapLen - size
     }
   }
 
-  /** Remove [len] group from [start]. */
-  private fun removeGroups(start: Int, len: Int): Boolean {
-    return if (len > 0) {
+  /**
+   * Remove [len] group from [start].
+   *
+   * [start]부터 [len]개의 그룹을 제거합니다.
+   */
+  private fun removeGroups(start: Int, len: Int): Boolean =
+    if (len > 0) {
       var anchorsRemoved = false
       val anchors = anchors
 
-      // Move the gap to start of the removal and grow the gap
-      moveGroupGapTo(start)
+      // Move the gap to start of the removal and grow the gap.
+      // gap을 제거 시작 위치로 옮기고 gap을 늘립니다.
+      moveGroupGapTo(index = start)
+
       if (anchors.isNotEmpty()) {
-        anchorsRemoved = removeAnchors(start, len, sourceInformationMap)
+        anchorsRemoved = removeAnchors(
+          gapStart = start,
+          size = len,
+          sourceInformationMap = sourceInformationMap,
+        )
       }
+
       groupGapStart = start
+
       val previousGapLen = groupGapLen
       val newGapLen = previousGapLen + len
+
       groupGapLen = newGapLen
 
       // Adjust the gap owner if necessary.
+      // 필요하다면 gap 소유자를 조정합니다.
       val slotsGapOwner = slotsGapOwner
       if (slotsGapOwner > start) {
         // Use max here as if we delete the current owner this group becomes the owner.
+        // 현재 소유자를 삭제하는 경우 이 그룹이 새 소유자가 되므로, 여기서는 max를 사용합니다.
         this.slotsGapOwner = max(start, slotsGapOwner - len)
       }
-      if (currentGroupEnd >= groupGapStart) currentGroupEnd -= len
+
+      if (currentGroupEnd >= groupGapStart)
+        currentGroupEnd -= len
 
       val parent = parent
-      // Update markers if necessary
-      if (containsGroupMark(parent)) {
-        updateContainsMark(parent)
+
+      // Update markers if necessary.
+      // 필요하다면 마커를 갱신합니다.
+      if (containsGroupMark(group = parent)) {
+        updateContainsMark(group = parent)
       }
 
-      // Remove the group from its parent source information
+      // Remove the group from its parent source information.
+      // 그룹을 부모 소스 정보에서 제거합니다.
       anchorsRemoved
-    } else false
-  }
+    } else {
+      false
+    }
 
   internal fun sourceInformationOf(group: Int): GroupSourceInformation? =
-    sourceInformationMap?.let { map -> tryAnchor(group)?.let { anchor -> map[anchor] } }
+    sourceInformationMap?.let { informationMap ->
+      tryAnchor(group = group)?.let { anchor -> informationMap[anchor] }
+    }
 
-  internal fun tryAnchor(group: Int) =
-    if (group in 0 until size) anchors.find(group, size) else null
+  internal fun tryAnchor(group: Int): Anchor? =
+    if (group in 0 until size)
+      anchors.find(index = group, effectiveSize = size)
+    else
+      null
 
-  /** Remove [len] slots from [start]. */
+  /**
+   * Remove [len] slots from [start].
+   *
+   * [start] 위치에서 [len]개의 슬롯을 제거합니다.
+   * (즉, len개 만큼 gap을 넣음)
+   */
   private fun removeSlots(start: Int, len: Int, group: Int) {
     if (len > 0) {
       val gapLen = slotsGapLen
       val removeEnd = start + len
-      moveSlotGapTo(removeEnd, group)
+
+      // 기존에 있던 gap을 최상위로 올림 (겹치는 gap 없게!)
+      moveSlotGapTo(index = removeEnd, group = group)
+
       slotsGapStart = start
       slotsGapLen = gapLen + len
-      slots.fill(null, start, start + len)
+      slots.fill(
+        element = null,
+        fromIndex = start,
+        toIndex = start + len,
+      )
+
       val currentDataEnd = currentSlotEnd
-      if (currentDataEnd >= start) this.currentSlotEnd = currentDataEnd - len
+      if (currentDataEnd >= start)
+        this.currentSlotEnd = currentDataEnd - len
     }
   }
 
-  /** A helper function to update the number of nodes in a group. */
+  /**
+   * A helper function to update the number of nodes in a group.
+   *
+   * 그룹의 노드 수를 갱신하는 보조 함수입니다.
+   */
   private fun updateNodeOfGroup(index: Int, value: Any?) {
-    val address = groupIndexToAddress(index)
-    runtimeCheck(address < groups.size && groups.isNode(address)) {
+    val address = groupIndexToAddress(index = index)
+
+    runtimeCheck(address < groups.size && groups.isNode(address = address)) {
+      // $index 위치의 그룹이 노드 그룹으로 생성되지 않았는데 노드를 갱신하려고 했습니다.
       "Updating the node of a group at $index that was not created with as a node group"
     }
-    slots[dataIndexToDataAddress(groups.nodeIndex(address))] = value
+
+    slots[dataIndexToDataAddress(dataIndex = groups.nodeIndex(address = address))] = value
   }
 
-  /** A helper function to update the anchors as the gap in [groups] moves. */
+  /**
+   * A helper function to update the anchors as the gap in [groups] moves.
+   *
+   * [groups]의 gap이 이동할 때 앵커를 갱신하는 보조 함수입니다.
+   */
   private fun updateAnchors(previousGapStart: Int, newGapStart: Int) {
-    val gapLen = groupGapLen
-    val size = capacity - gapLen
+    val size = size
+
     if (previousGapStart < newGapStart) {
-      // Gap is moving up
-      // All anchors between the new gap and the old gap switch to be anchored to the
-      // front of the table instead of the end.
-      var index = anchors.anchorLocationOf(previousGapStart, size)
+      // Gap is moving up. All anchors between the new gap and the old gap switch to
+      // be anchored to the front of the table instead of the end.
+      //
+      // gap이 위쪽으로 이동합니다. 새 gap과 기존 gap 사이의 모든 앵커는 끝이 아닌 테이블
+      // 앞을 기준으로 하도록 전환합니다.
+      var index = anchors.anchorLocationOf(index = previousGapStart, effectiveSize = size)
+
       while (index < anchors.size) {
         val anchor = anchors[index]
         val location = anchor.location
         if (location < 0) {
           val newLocation = size + location
           if (newLocation < newGapStart) {
-            anchor.location = size + location
+            anchor.location = newLocation
             index++
-          } else break
-        } else break
+          } else {
+            break
+          }
+        } else {
+          break
+        }
       }
-    } else {
-      // Gap is moving down. All anchors between newGapStart and previousGapStart need now
-      // to be anchored to the end of the table instead of the front of the table.
-      var index = anchors.anchorLocationOf(newGapStart, size)
+    }
+
+    // previousGapStart >= newGapStart
+    else {
+      // Gap is moving down. All anchors between newGapStart and previousGapStart need
+      // now to be anchored to the end of the table instead of the front of the table.
+      //
+      // gap이 아래로 이동합니다. newGapStart와 previousGapStart 사이의 모든 앵커는
+      // 테이블 앞이 아닌 끝을 기준으로 하도록 전환합니다.
+      var index = anchors.anchorLocationOf(index = newGapStart, effectiveSize = size)
+
       while (index < anchors.size) {
         val anchor = anchors[index]
         val location = anchor.location
@@ -3371,51 +4445,67 @@ internal class SlotWriter(
     }
   }
 
-  /** A helper function to remove the anchors for groups that are removed. */
+  /**
+   * A helper function to remove the anchors for groups that are removed.
+   *
+   * 삭제된 그룹의 앵커를 제거하는 보조 함수입니다.
+   */
   private fun removeAnchors(
     gapStart: Int,
     size: Int,
     sourceInformationMap: HashMap<Anchor, GroupSourceInformation>?,
   ): Boolean {
-    val gapLen = groupGapLen
     val removeEnd = gapStart + size
-    val groupsSize = capacity - gapLen
+    val groupsSize = this.size
     var index =
-      anchors.anchorLocationOf(gapStart + size, groupsSize).let {
-        if (it >= anchors.size) it - 1 else it
+      anchors.anchorLocationOf(index = gapStart + size, effectiveSize = groupsSize).let { loc ->
+        if (loc >= anchors.size) loc - 1 else loc
       }
     var removeAnchorEnd = 0
     var removeAnchorStart = index + 1
+
     while (index >= 0) {
       val anchor = anchors[index]
-      val location = anchorIndex(anchor)
+      val location = anchorIndex(anchor = anchor)
+
       if (location >= gapStart) {
+        // location in gapStart..removeEnd
         if (location < removeEnd) {
           anchor.location = Int.MIN_VALUE
           sourceInformationMap?.remove(anchor)
           removeAnchorStart = index
-          if (removeAnchorEnd == 0) removeAnchorEnd = index + 1
+
+          if (removeAnchorEnd == 0)
+            removeAnchorEnd = index + 1
         }
         index--
       } else break
     }
+
     return (removeAnchorStart < removeAnchorEnd).also {
       if (it) anchors.subList(removeAnchorStart, removeAnchorEnd).clear()
     }
   }
 
-  /** A helper function to update anchors for groups that have moved. */
+  /**
+   * A helper function to update anchors for groups that have moved.
+   *
+   * 이동된 그룹들의 앵커를 갱신하는 보조 함수입니다.
+   */
   private fun moveAnchors(originalLocation: Int, newLocation: Int, size: Int) {
     val end = originalLocation + size
     val groupsSize = this.size
 
-    // Remove all the anchors in range from the original location
-    val index = anchors.anchorLocationOf(originalLocation, groupsSize)
+    // Remove all the anchors in range from the original location.
+    // 원래 위치 범위에 있는 모든 앵커를 제거합니다.
+    val index = anchors.anchorLocationOf(index = originalLocation, effectiveSize = groupsSize)
     val removedAnchors = mutableListOf<Anchor>()
+
     if (index >= 0) {
       while (index < anchors.size) {
         val anchor = anchors[index]
-        val location = anchorIndex(anchor)
+        val location = anchorIndex(anchor = anchor)
+
         @Suppress("ConvertTwoComparisonsToRangeCheck")
         if (location >= originalLocation && location < end) {
           removedAnchors.add(anchor)
@@ -3424,83 +4514,104 @@ internal class SlotWriter(
       }
     }
 
-    // Insert the anchors into there new location
+    // Insert the anchors into there new location.
+    // 앵커들을 새로운 위치에 삽입합니다.
     val moveDelta = newLocation - originalLocation
     removedAnchors.fastForEach { anchor ->
-      val anchorIndex = anchorIndex(anchor)
+      val anchorIndex = anchorIndex(anchor = anchor)
       val newAnchorIndex = anchorIndex + moveDelta
+
       if (newAnchorIndex >= groupGapStart) {
         anchor.location = -(groupsSize - newAnchorIndex)
       } else {
         anchor.location = newAnchorIndex
       }
-      val insertIndex = anchors.anchorLocationOf(newAnchorIndex, groupsSize)
-      anchors.add(insertIndex, anchor)
+
+      val insertIndex = anchors.anchorLocationOf(index = newAnchorIndex, effectiveSize = groupsSize)
+      anchors.add(/* index = */ insertIndex, /* element = */ anchor)
     }
   }
 
-  /** A debugging aid that emits [groups] as a string. */
+  /**
+   * A debugging aid that emits [groups] as a string.
+   *
+   * [groups]를 문자열로 출력하는 디버깅 보조 도구입니다.
+   */
   @Suppress("unused")
-  fun toDebugString(): String = buildString {
-    appendLine(this@SlotWriter.toString())
-    appendLine("  parent:    $parent")
-    appendLine("  current:   $currentGroup")
-    appendLine("  group gap: $groupGapStart-${groupGapStart + groupGapLen}($groupGapLen)")
-    appendLine("  slots gap: $slotsGapStart-${slotsGapStart + slotsGapLen}($slotsGapLen)")
-    appendLine("  gap owner: $slotsGapOwner")
-    for (index in 0 until size) {
-      groupAsString(index)
-      append('\n')
-    }
-  }
+  fun toDebugString(): String =
+    buildString {
+      appendLine(this@SlotWriter.toString())
 
-  /** A debugging aid that emits a group as a string into a string builder. */
+      appendLine("  parent   : $parent")
+      appendLine("  current  : $currentGroup")
+      appendLine("  group gap: $groupGapStart-${groupGapStart + groupGapLen}($groupGapLen)")
+      appendLine("  slots gap: $slotsGapStart-${slotsGapStart + slotsGapLen}($slotsGapLen)")
+      appendLine("  gap owner: $slotsGapOwner")
+
+      for (index in 0 until size) {
+        groupAsString(index = index)
+        append('\n')
+      }
+    }
+
+  /**
+   * A debugging aid that emits a group as a string into a string builder.
+   *
+   * 그룹을 문자열로 [StringBuilder]에 출력하는 디버깅 보조 도구입니다.
+   */
   private fun StringBuilder.groupAsString(index: Int) {
-    val address = groupIndexToAddress(index)
+    val address = groupIndexToAddress(index = index)
+
     append("Group(")
+
     if (index < 10) append(' ')
     if (index < 100) append(' ')
     if (index < 1000) append(' ')
     append(index)
+
     if (address != index) {
       append("(")
       append(address)
       append(")")
     }
+
     append('#')
-    append(groups.groupSize(address))
+    append(groups.groupSize(address = address))
     append('^')
-    append(parentAnchorToIndex(groups.parentAnchor(address)))
+    append(parentAnchorToIndex(index = groups.parentAnchor(address = address)))
     append(": key=")
-    append(groups.key(address))
+    append(groups.key(address = address))
     append(", nodes=")
-    append(groups.nodeCount(address))
+    append(groups.nodeCount(address = address))
     append(", dataAnchor=")
-    append(groups.dataAnchor(address))
+    append(groups.dataAnchor(address = address))
     append(", parentAnchor=")
-    append(groups.parentAnchor(address))
-    if (groups.isNode(address)) {
+    append(groups.parentAnchor(address = address))
+
+    if (groups.isNode(address = address)) {
       append(
         ", node=${
-          slots[
-            dataIndexToDataAddress(groups.nodeIndex(address))
-          ].toString().summarize(10)
-        }"
+          slots[dataIndexToDataAddress(dataIndex = groups.nodeIndex(address = address))]
+            .toString()
+            .summarize(10)
+        }",
       )
     }
 
-    val startData = groups.slotIndex(address)
-    val successorAddress = groupIndexToAddress(index + 1)
-    val endData = groups.dataIndex(successorAddress)
+    val startData = groups.slotIndex(address = address)
+    val successorAddress = groupIndexToAddress(index = index + 1)
+    val endData = groups.dataIndex(address = successorAddress)
+
     if (endData > startData) {
       append(", [")
       for (dataIndex in startData until endData) {
         if (dataIndex != startData) append(", ")
-        val dataAddress = dataIndexToDataAddress(dataIndex)
+        val dataAddress = dataIndexToDataAddress(dataIndex = dataIndex)
         append(slots[dataAddress].toString().summarize(10))
       }
       append(']')
     }
+
     append(")")
   }
 
@@ -3509,23 +4620,31 @@ internal class SlotWriter(
     val owner = slotsGapOwner
     var ownerFound = false
     val slotsSize = slots.size - slotsGapLen
+
     for (index in 0 until size) {
-      val address = groupIndexToAddress(index)
-      val dataAnchor = groups.dataAnchor(address)
-      val dataIndex = groups.dataIndex(address)
+      val address = groupIndexToAddress(index = index)
+      val dataAnchor = groups.dataAnchor(address = address)
+      val dataIndex = groups.dataIndex(address = address)
+
       checkPrecondition(dataIndex >= previousDataIndex) {
-        "Data index out of order at $index, previous = $previousDataIndex, current = " +
-          "$dataIndex"
+        // 데이터 인덱스가 순서에서 벗어났습니다.
+        // 위치: $index, 이전 = $previousDataIndex, 현재 = $dataIndex
+        "Data index out of order at $index, previous = $previousDataIndex, current = $dataIndex"
       }
       checkPrecondition(dataIndex <= slotsSize) {
+        // 데이터 인덱스 $dataIndex 가 $index 위치에서 범위를 벗어났습니다.
         "Data index, $dataIndex, out of bound at $index"
       }
+
       if (dataAnchor < 0 && !ownerFound) {
         checkPrecondition(owner == index) {
+          // 슬롯 gap 소유자는 $owner 이어야 하는데, $index 에서 gap이 발견되었습니다.
           "Expected the slot gap owner to be $owner found gap at $index"
         }
+
         ownerFound = true
       }
+
       previousDataIndex = dataIndex
     }
   }
@@ -3535,93 +4654,138 @@ internal class SlotWriter(
     val gapStart = groupGapStart
     val gapLen = groupGapLen
     val capacity = capacity
+
     for (groupAddress in 0 until gapStart) {
-      val parentAnchor = groups.parentAnchor(groupAddress)
-      checkPrecondition(parentAnchor > parentAnchorPivot) {
+      val parentAnchor = groups.parentAnchor(address = groupAddress)
+
+      checkPrecondition(parentAnchor > ParentAnchorPivot) {
+        // $groupAddress 위치에서 시작 기준 앵커가 있어야 합니다.
         "Expected a start relative anchor at $groupAddress"
       }
     }
+
     for (groupAddress in gapStart + gapLen until capacity) {
-      val parentAnchor = groups.parentAnchor(groupAddress)
-      val parentIndex = parentAnchorToIndex(parentAnchor)
+      val parentAnchor = groups.parentAnchor(address = groupAddress)
+      val parentIndex = parentAnchorToIndex(index = parentAnchor)
+
       if (parentIndex < gapStart) {
-        checkPrecondition(parentAnchor > parentAnchorPivot) {
+        checkPrecondition(parentAnchor > ParentAnchorPivot) {
+          // $groupAddress 위치에서 시작 기준 앵커가 있어야 합니다.
           "Expected a start relative anchor at $groupAddress"
         }
       } else {
-        checkPrecondition(parentAnchor <= parentAnchorPivot) {
+        checkPrecondition(parentAnchor <= ParentAnchorPivot) {
+          // $groupAddress 위치에서 끝 기준 앵커가 있어야 합니다.
           "Expected an end relative anchor at $groupAddress"
         }
       }
     }
   }
 
-  internal val size
-    get() = capacity - groupGapLen
-
-  private val capacity
+  // 현재 그룹 배열이 최대로 가질 수 있는 그룹 수 (gap 크기 포함)
+  private val capacity: Int
     get() = groups.size / Group_Fields_Size
 
-  private fun groupIndexToAddress(index: Int) =
-    // Branch-less if (index < groupGapStart) index else index + groupGapLen
-    index + groupGapLen * if (index < groupGapStart) 0 else 1
+  // 현재 그룹 배열 중 실제로 할당된 그룹의 수
+  internal val size: Int
+    get() = capacity - groupGapLen
 
-  private fun dataIndexToDataAddress(dataIndex: Int) =
-    // Branch-less if (dataIndex < slotsGapStart) dataIndex else dataIndex + slotsGapLen
-    dataIndex + slotsGapLen * if (dataIndex < slotsGapStart) 0 else 1
+  // MEMO index -> address 공식
+  private fun groupIndexToAddress(index: Int): Int =
+    // Branch-less of `if (index < groupGapStart) index else index + groupGapLen`.
+    index + (groupGapLen * if (index < groupGapStart) 0 else 1)
 
-  private fun IntArray.parent(index: Int) =
-    parentAnchorToIndex(parentAnchor(groupIndexToAddress(index)))
+  private fun dataIndexToDataAddress(dataIndex: Int): Int =
+    // Branch-less of `if (dataIndex < slotsGapStart) dataIndex else dataIndex + slotsGapLen`.
+    dataIndex + (slotsGapLen * if (dataIndex < slotsGapStart) 0 else 1)
 
-  private fun dataIndex(index: Int) = groups.dataIndex(groupIndexToAddress(index))
+  private fun IntArray.parent(index: Int): Int =
+    parentAnchorToIndex(index = parentAnchor(address = groupIndexToAddress(index = index)))
 
-  private fun IntArray.dataIndex(address: Int) =
-    if (address >= capacity) slots.size - slotsGapLen
-    else dataAnchorToDataIndex(dataAnchor(address), slotsGapLen, slots.size)
+  private fun dataIndex(index: Int): Int =
+    groups.dataIndex(address = groupIndexToAddress(index = index))
 
-  private fun IntArray.slotIndex(address: Int) =
-    if (address >= capacity) slots.size - slotsGapLen
-    else dataAnchorToDataIndex(slotAnchor(address), slotsGapLen, slots.size)
+  private fun IntArray.dataIndex(address: Int): Int =
+    if (address >= capacity)
+    // 사용 가능한 제일 가까운 슬롯 인덱스?
+      slots.size - slotsGapLen
+    else
+      dataAnchorToDataIndex(
+        anchor = dataAnchor(address = address),
+        gapLen = slotsGapLen,
+        capacity = slots.size,
+      )
+
+  private fun IntArray.slotIndex(address: Int): Int =
+    if (address >= capacity)
+    // 가장 먼저 비어 있는 슬롯 쓰는 듯?
+      slots.size - slotsGapLen
+    else
+      dataAnchorToDataIndex(
+        anchor = slotAnchor(address = address),
+        gapLen = slotsGapLen,
+        capacity = slots.size,
+      )
 
   private fun IntArray.updateDataIndex(address: Int, dataIndex: Int) {
     updateDataAnchor(
-      address,
-      dataIndexToDataAnchor(dataIndex, slotsGapStart, slotsGapLen, slots.size),
+      address = address,
+      anchor = dataIndexToDataAnchor(
+        index = dataIndex,
+        gapStart = slotsGapStart,
+        gapLen = slotsGapLen,
+        capacity = slots.size,
+      ),
     )
   }
 
-  private fun IntArray.nodeIndex(address: Int) = dataIndex(address)
+  private fun IntArray.nodeIndex(address: Int): Int =
+    dataIndex(address = address)
 
-  private fun IntArray.auxIndex(address: Int) =
-    dataIndex(address) + countOneBits(groupInfo(address) shr (Aux_Shift + 1))
+  // 않이!! 로직은 이해가 되는데, 이게 어떻게 성립하는지가 이해 안되니까 미치겠어..
+  private fun IntArray.auxIndex(address: Int): Int =
+    // STUDY aux 앞 비트들이 꺼져있는데(0), aux가 설정되어 있다면 이때의 index 계산은 괜찮나???
+    dataIndex(address = address) + countOneBits(groupInfo(address = address) shr (Aux_Shift + 1))
 
   @Suppress("unused")
-  private fun IntArray.dataIndexes() =
-    groups
-      .dataAnchors()
-      .let {
-        it.slice(0 until groupGapStart) +
-          it.slice(groupGapStart + groupGapLen until (size / Group_Fields_Size))
+  private fun IntArray.dataIndexes(): List<Int> =
+    groups.dataAnchors()
+      .let { anchors ->
+        anchors.slice(0 until groupGapStart) +
+          anchors.slice(groupGapStart + groupGapLen until (size / Group_Fields_Size))
       }
-      .fastMap { anchor -> dataAnchorToDataIndex(anchor, slotsGapLen, slots.size) }
+      .fastMap { anchor ->
+        dataAnchorToDataIndex(
+          anchor = anchor,
+          gapLen = slotsGapLen,
+          capacity = slots.size,
+        )
+      }
 
   @Suppress("unused")
-  private fun keys() =
-    groups.keys().fastFilterIndexed { index, _ ->
+  private fun keys(): List<Int> =
+    groups.keys().fastFilterIndexed { index, _ /* element */ ->
       index < groupGapStart || index >= groupGapStart + groupGapLen
     }
 
-  private fun dataIndexToDataAnchor(index: Int, gapStart: Int, gapLen: Int, capacity: Int) =
-    if (index > gapStart) -((capacity - gapLen) - index + 1) else index
+  private fun dataIndexToDataAnchor(index: Int, gapStart: Int, gapLen: Int, capacity: Int): Int =
+    if (index > gapStart)
+      -((capacity - gapLen) - index + 1)
+    else
+      index
 
-  private fun dataAnchorToDataIndex(anchor: Int, gapLen: Int, capacity: Int) =
-    if (anchor < 0) (capacity - gapLen) + anchor + 1 else anchor
+  private fun dataAnchorToDataIndex(anchor: Int, gapLen: Int, capacity: Int): Int =
+    if (anchor < 0)
+      (capacity - gapLen) + anchor + 1
+    else
+      anchor
 
-  private fun parentIndexToAnchor(index: Int, gapStart: Int) =
-    if (index < gapStart) index else -(size - index - parentAnchorPivot)
+  // MEMO index -> anchor 공식
+  private fun parentIndexToAnchor(index: Int, gapStart: Int): Int =
+    if (index < gapStart) index else -(size - index - ParentAnchorPivot)
 
-  private fun parentAnchorToIndex(index: Int) =
-    if (index > parentAnchorPivot) index else size + index - parentAnchorPivot
+  private fun parentAnchorToIndex(index: Int): Int =
+    if (index > ParentAnchorPivot) index else size + index - ParentAnchorPivot
 }
 
 // Summarize the toString of an object.
@@ -3718,8 +4882,10 @@ private class SlotTableGroup(
     get() {
       val nextGroup = address + groupSize
       val nextSlot: Int =
-        if (nextGroup < table.groupsSize) table.groups.dataAnchor(address = nextGroup)
-        else table.slotsSize
+        if (nextGroup < table.groupsSize)
+          table.groups.dataAnchor(address = nextGroup)
+        else
+          table.slotsSize
 
       return nextSlot - table.groups.dataAnchor(address = address)
     }
@@ -3782,9 +4948,11 @@ private sealed class SourceInformationGroupPath {
 }
 
 private class AnchoredGroupPath(val group: Int) : SourceInformationGroupPath() {
-  override fun getIdentity(table: SlotTable): Anchor = table.anchor(index = group)
+  override fun getIdentity(table: SlotTable): Anchor =
+    table.anchor(index = group)
 
-  override fun equals(other: Any?): Boolean = other is AnchoredGroupPath && other.group == group
+  override fun equals(other: Any?): Boolean =
+    other is AnchoredGroupPath && other.group == group
 
   override fun hashCode(): Int = group * 31
 }
@@ -3879,6 +5047,7 @@ private class GroupIterator(
 
   override fun next(): CompositionGroup {
     validateRead()
+
     val group = index
 
     index += table.groups.groupSize(address = group)
@@ -3901,19 +5070,18 @@ private class DataIterator(val table: SlotTable, group: Int) : Iterable<Any?>, I
     else
       table.slotsSize
 
-  var index = start
+  var index: Int = start
 
   override fun iterator(): Iterator<Any?> = this
 
   override fun hasNext(): Boolean = index < end
 
   override fun next(): Any? =
-    (
-      if (index >= 0 && index < table.slots.size)
-        table.slots[index]
-      else
-        null
-      ).also { index++ }
+    (if (index >= 0 && index < table.slots.size)
+      table.slots[index]
+    else
+      null)
+      .also { index++ }
 }
 
 private class SourceInformationGroupDataIterator(
@@ -3949,12 +5117,11 @@ private class SourceInformationGroupDataIterator(
 
   override fun iterator(): Iterator<Any?> = this
 
-  override fun hasNext() = index < end
+  override fun hasNext(): Boolean = index < end
 
   override fun next(): Any? =
-    (if (index in 0 until end) table.slots[base + index] else null).also {
-      index = filter.nextClear(index = index + 1)
-    }
+    (if (index in 0 until end) table.slots[base + index] else null)
+      .also { index = filter.nextClear(index = index + 1) }
 }
 
 private val EmptyLongArray = LongArray(size = 0)
@@ -4181,8 +5348,8 @@ private class SourceInformationGroupIterator(
   override fun hasNext(): Boolean =
     sourceInformation.groups?.let { groups -> index < groups.size } ?: false
 
-  override fun next(): CompositionGroup {
-    return when (val group = sourceInformation.groups?.get(index++)) {
+  override fun next(): CompositionGroup =
+    when (val group = sourceInformation.groups?.get(index++)) {
       is Anchor -> {
         SlotTableGroup(
           table = table,
@@ -4202,12 +5369,13 @@ private class SourceInformationGroupIterator(
 
       else -> composeRuntimeError("Unexpected group information structure")
     }
-  }
 }
 
 // Parent -1 is reserved to be the root parent index so the anchor must pivot on -2.
 // 부모가 -1인 값은 루트 부모 인덱스로 예약되어 있으므로, 앵커는 -2를 기준으로 해야 합니다.
-private const val parentAnchorPivot = -2
+//
+// STUDY 이 상수 이해하기....
+private const val ParentAnchorPivot = -2
 
 // Group layout
 //  0             | 1             | 2             | 3             | 4             |
@@ -4236,6 +5404,8 @@ private const val Group_Fields_Size = 5
 // where ds is whether the group has a group data slot.
 // where m is whether the group is marked.
 // where cm is whether the group contains a mark.
+//
+// (MSB는 항상 0인 듯!)
 //
 // n은 그룹이 노드를 나타낼 때 설정됩니다.
 // ks는 그룹에 object key 슬롯이 있는지를 나타냅니다.
@@ -4268,6 +5438,7 @@ private const val ContainsMark_Shift = 26
 
 private const val NodeCount_Mask = 0b0000_0011_1111_1111__1111_1111_1111_1111
 
+// STUDY 상수명의 의미..
 private const val Slots_Shift = Aux_Shift
 
 // Parent anchor is a group anchor to the parent, as the group gap is moved this value is updated to
@@ -4374,7 +5545,13 @@ private fun IntArray.auxIndex(address: Int): Int =
   }
 
 private fun IntArray.slotAnchor(address: Int): Int =
-  dataAnchor(address = address) + countOneBits(groupInfo(address = address) shr Slots_Shift)
+  dataAnchor(address = address) +
+    // shr 결과로 n, ks, ds 플래그만 남을 듯?
+    //
+    //   - n은 그룹이 노드를 나타낼 때 설정됩니다.
+    //   - ks는 그룹에 object key 슬롯이 있는지를 나타냅니다.
+    //   - ds는 그룹에 group data 슬롯이 있는지를 나타냅니다. (Aux에 해당)
+    countOneBits(groupInfo(address = address) shr Slots_Shift)
 
 private inline fun countOneBits(value: Int): Int = value.countOneBits()
 
@@ -4602,6 +5779,8 @@ internal value class PrioritySet(private val list: MutableIntList = mutableIntLi
 
   // Remove a de-duplicated value from the heap.
   // 중복 제거된 값을 힙에서 제거합니다.
+  //
+  // 제일 큰 값 반환
   fun takeMax(): Int {
     debugRuntimeCheck(list.size > 0) { "Set is empty" }
 
