@@ -3301,7 +3301,7 @@ private inline fun List<Invalidation>.forEachInRange(
   }
 }
 
-private fun Boolean.asInt() = if (this) 1 else 0
+internal fun Boolean.asInt(): Int = if (this) 1 else 0
 
 private fun Int.asBool() = this != 0
 

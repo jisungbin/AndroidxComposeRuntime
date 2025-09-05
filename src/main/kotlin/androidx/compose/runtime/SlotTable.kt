@@ -5262,7 +5262,7 @@ internal class BitVector {
     // 첫 번째 워드에서 비트를 설정할 필요가 없으면 해당 비트들을 0으로 설정합니다.
     //
     // start가 64보다 클 때만 selector는 0이 됨. 아니라면 항상 -1.
-    var selector = bits * (start < 64).toBit()
+    var selector = bits * (start < 64).asInt()
 
     // Take our selector (either all 0s or all 1s), perform an unsigned shift to the
     // right to create a new word with "clampedEnd - start" bits, then shift it back
@@ -5300,7 +5300,7 @@ internal class BitVector {
     // 두 번째 워드에서 비트를 설정할 필요가 없으면 해당 비트들을 0으로 설정합니다.
     //
     // start가 128보다 클 때만 selector는 0이 됨. 아니라면 항상 -1.
-    selector = bits * (start < 128).toBit()
+    selector = bits * (start < 128).asInt()
 
     // See firstValue above.
     // 위의 firstValue를 참조하세요.
