@@ -1152,217 +1152,439 @@ private inline fun <T> ArrayList<T>.fastIndexOf(predicate: (T) -> Boolean): Int 
   return -1
 }
 
-/** A reader of a slot table. See [SlotTable] */
+/**
+ * A reader of a slot table. See [SlotTable].
+ *
+ * 슬롯 테이블을 읽는 리더입니다. [SlotTable]을 참고하세요.
+ */
 internal class SlotReader(
-  /** The table for whom this is a reader. */
+  /**
+   * The table for whom this is a reader.
+   *
+   * 이 리더가 참조하는 테이블입니다.
+   */
   internal val table: SlotTable,
 ) {
-
-  /** A copy of the [SlotTable.groups] array to avoid having indirect through [table]. */
+  /**
+   * A copy of the [SlotTable.groups] array to avoid having indirect through [table].
+   *
+   * [table]을 거치지 않기 위해 [SlotTable.groups] 배열을 복사한 것입니다.
+   */
   private val groups: IntArray = table.groups
 
-  /** A copy of [SlotTable.groupsSize] to avoid having to indirect through [table]. */
+  /**
+   * A copy of [SlotTable.groupsSize] to avoid having to indirect through [table].
+   *
+   * [table]을 거치지 않기 위해 [SlotTable.groupsSize]를 복사한 값입니다.
+   */
   private val groupsSize: Int = table.groupsSize
 
-  /** A copy of [SlotTable.slots] to avoid having to indirect through [table]. */
+  /**
+   * A copy of [SlotTable.slots] to avoid having to indirect through [table].
+   *
+   * [table]을 거치지 않기 위해 [SlotTable.slots]를 복사한 값입니다.
+   */
   private var slots: Array<Any?> = table.slots
 
-  /** A Copy of [SlotTable.slotsSize] to avoid having to indirect through [table]. */
+  /**
+   * A Copy of [SlotTable.slotsSize] to avoid having to indirect through [table].
+   *
+   * [table]을 거치지 않기 위해 [SlotTable.slotsSize]를 복사한 값입니다.
+   */
   private val slotsSize: Int = table.slotsSize
 
   /**
-   * A local copy of the [sourceInformationMap] being created to be merged into [table] when the
-   * reader closes.
+   * A local copy of the [sourceInformationMap] being created to be merged into [table]
+   * when the reader closes.
+   *
+   * 리더가 닫힐 때 [table]에 병합되도록 생성 중인 [sourceInformationMap]의 로컬
+   * 복사본입니다.
    */
   private var sourceInformationMap: HashMap<Anchor, GroupSourceInformation>? = null
 
-  /** True if the reader has been closed */
+  /**
+   * True if the reader has been closed.
+   *
+   * 리더가 닫혔으면 true입니다.
+   */
   var closed: Boolean = false
     private set
 
-  /** The current group that will be started with [startGroup] or skipped with [skipGroup]. */
-  var currentGroup = 0
-
-  /** The end of the [parent] group. */
-  var currentEnd = groupsSize
-    private set
-
-  /** The parent of the [currentGroup] group which is the last group started with [startGroup]. */
-  var parent = -1
-    private set
-
-  /** The current location of the current slot to restore [endGroup] is called. */
-  private val currentSlotStack = IntStack()
-
-  /** The number of times [beginEmpty] has been called. */
-  private var emptyCount = 0
+  /**
+   * The current group that will be started with [startGroup] or skipped with [skipGroup].
+   *
+   * 현재 그룹으로, [startGroup]으로 시작되거나 [skipGroup]으로 건너뛰어집니다.
+   */
+  var currentGroup: Int = 0
 
   /**
-   * The current slot of [parent]. This slot will be the next slot returned by [next] unless it is
-   * equal ot [currentSlotEnd].
+   * The end of the [parent] group.
+   *
+   * [parent] 그룹의 끝입니다.
    */
-  private var currentSlot = 0
+  var currentEnd: Int = groupsSize
+    private set
 
-  /** The current end slot of [parent]. */
-  private var currentSlotEnd = 0
+  /**
+   * The parent of the [currentGroup] group which is the last group started
+   * with [startGroup].
+   *
+   * [currentGroup] 그룹의 부모로, 마지막으로 [startGroup]으로 시작된 그룹입니다.
+   */
+  var parent: Int = -1
+    private set
 
-  /** Return the total number of groups in the slot table. */
+  /**
+   * The current location of the current slot to restore [endGroup] is called.
+   *
+   * 현재 슬롯의 위치로, [endGroup]가 호출될 때 복원할 값입니다.
+   */
+  private val currentSlotStack = IntStack()
+
+  /**
+   * The number of times [beginEmpty] has been called.
+   *
+   * [beginEmpty]가 호출된 횟수입니다.
+   */
+  private var emptyCount: Int = 0
+
+  /**
+   * The current slot of [parent]. This slot will be the next slot returned by
+   * [next] unless it is equal ot [currentSlotEnd].
+   *
+   * [parent]의 현재 슬롯입니다. 이 슬롯은 [currentSlotEnd]와 같지 않으면
+   * [next]가 반환하는 다음 슬롯이 됩니다.
+   */
+  private var currentSlot: Int = 0
+
+  /**
+   * The current end slot of [parent].
+   *
+   * [parent]의 현재 끝 슬롯입니다.
+   */
+  private var currentSlotEnd: Int = 0
+
+  /**
+   * Return the total number of groups in the slot table.
+   *
+   * 슬롯 테이블에 있는 그룹의 총 개수를 반환합니다.
+   */
   val size: Int
     get() = groupsSize
 
-  /** Return the current slot of the group whose value will be returned by calling [next]. */
+  /**
+   * Return the current slot of the group whose value will be returned by
+   * calling [next].
+   *
+   * [next]를 호출했을 때 반환될 값을 가진 그룹의 현재 슬롯을 반환합니다.
+   */
   val slot: Int
-    get() = currentSlot - groups.slotAnchor(parent)
-
-  /** Return the parent index of [index]. */
-  fun parent(index: Int) = groups.parentAnchor(index)
-
-  /** Determine if the slot is start of a node. */
-  val isNode: Boolean
-    get() = groups.isNode(currentGroup)
-
-  /** Determine if the group at [index] is a node. */
-  fun isNode(index: Int) = groups.isNode(index)
+    get() = currentSlot - groups.slotAnchor(address = parent)
 
   /**
-   * The number of nodes managed by the current group. For node groups, this is the list of the
-   * children nodes.
+   * Return the parent index of [index].
+   *
+   * [index]의 부모 인덱스를 반환합니다.
+   */
+  fun parent(index: Int): Int = groups.parentAnchor(address = index)
+
+  /**
+   * Determine if the slot is start of a node.
+   *
+   * 해당 슬롯이 노드의 시작인지 확인합니다.
+   */
+  val isNode: Boolean
+    get() = groups.isNode(address = currentGroup)
+
+  /**
+   * Determine if the group at [index] is a node.
+   *
+   * [index]에 있는 그룹이 노드인지 확인합니다.
+   */
+  fun isNode(index: Int): Boolean = groups.isNode(address = index)
+
+  /**
+   * The number of nodes managed by the current group. For node groups, this is
+   * the list of the children nodes.
+   *
+   * 현재 그룹이 관리하는 노드의 수입니다. 노드 그룹의 경우, 이는 자식 노드들의
+   * 목록입니다.
    */
   val nodeCount: Int
-    get() = groups.nodeCount(currentGroup)
+    get() = groups.nodeCount(address = currentGroup)
 
-  /** Return the number of nodes for the group at [index]. */
-  fun nodeCount(index: Int) = groups.nodeCount(index)
+  /**
+   * Return the number of nodes for the group at [index].
+   *
+   * [index]에 있는 그룹의 노드 수를 반환합니다.
+   */
+  fun nodeCount(index: Int): Int = groups.nodeCount(address = index)
 
-  /** Return the node at [index] if [index] is a node group else null. */
-  fun node(index: Int): Any? = if (groups.isNode(index)) groups.node(index) else null
+  /**
+   * Return the node at [index] if [index] is a node group else null.
+   *
+   * [index]가 노드 그룹이면 해당 노드를 반환하고, 아니면 null을 반환합니다.
+   */
+  fun node(index: Int): Any? =
+    if (groups.isNode(address = index))
+      groups.node(index = index)
+    else
+      null
 
-  /** Determine if the reader is at the end of a group and an [endGroup] is expected. */
-  val isGroupEnd
+  /**
+   * Determine if the reader is at the end of a group and an [endGroup] is expected.
+   *
+   * 리더가 그룹의 끝에 도달하여 [endGroup]이 호출되어야 하는지 확인합니다.
+   */
+  val isGroupEnd: Boolean
     get() = inEmpty || currentGroup == currentEnd
 
-  /** Determine if a [beginEmpty] has been called. */
-  val inEmpty
+  /**
+   * Determine if a [beginEmpty] has been called.
+   *
+   * [beginEmpty]가 호출되었는지 확인합니다.
+   */
+  val inEmpty: Boolean
     get() = emptyCount > 0
 
-  /** Get the size of the group at [currentGroup]. */
-  val groupSize
-    get() = groups.groupSize(currentGroup)
+  /**
+   * Get the size of the group at [currentGroup].
+   *
+   * [currentGroup]에 있는 그룹의 크기를 가져옵니다.
+   */
+  val groupSize: Int
+    get() = groups.groupSize(address = currentGroup)
 
   /**
    * Get the size of the group at [index]. Will throw an exception if [index] is not a group
    * start.
+   *
+   * [index]에 있는 그룹의 크기를 가져옵니다. [index]가 그룹의 시작이 아니면 예외를 던집니다.
    */
-  fun groupSize(index: Int) = groups.groupSize(index)
+  fun groupSize(index: Int): Int = groups.groupSize(address = index)
 
-  /** Get the slot size for [group]. Will throw an exception if [group] is not a group start. */
+  /**
+   * Get the slot size for [group]. Will throw an exception if [group] is not a group start.
+   *
+   * [group]의 슬롯 크기를 가져옵니다. [group]이 그룹의 시작이 아니면 예외를 던집니다.
+   */
   fun slotSize(group: Int): Int {
-    val start = groups.slotAnchor(group)
+    val start = groups.slotAnchor(address = group)
     val next = group + 1
-    val end = if (next < groupsSize) groups.dataAnchor(next) else slotsSize
+    val end = if (next < groupsSize) groups.dataAnchor(address = next) else slotsSize
+
     return end - start
   }
 
-  /** Get location the end of the currently started group. */
-  val groupEnd
+  /**
+   * Get location the end of the currently started group.
+   *
+   * 현재 시작된 그룹의 끝 위치를 가져옵니다.
+   */
+  val groupEnd: Int
     get() = currentEnd
 
-  /** Get location of the end of the group at [index]. */
-  fun groupEnd(index: Int) = index + groups.groupSize(index)
-
-  /** Get the key of the current group. Returns 0 if the [currentGroup] is not a group. */
-  val groupKey
-    get() =
-      if (currentGroup < currentEnd) {
-        groups.key(currentGroup)
-      } else 0
-
-  /** Get the key of the group at [index]. */
-  fun groupKey(index: Int) = groups.key(index)
+  /**
+   * Get location of the end of the group at [index].
+   *
+   * [index]에 있는 그룹의 끝 위치를 가져옵니다.
+   */
+  fun groupEnd(index: Int): Int = index + groups.groupSize(address = index)
 
   /**
-   * The group slot index is the index into the current groups slots that will be updated by read
-   * by [next].
+   * Get the key of the current group. Returns 0 if the [currentGroup] is not a group.
+   *
+   * 현재 그룹의 키를 가져옵니다. [currentGroup]이 그룹이 아니면 0을 반환합니다.
    */
-  val groupSlotIndex
-    get() = currentSlot - groups.slotAnchor(parent)
+  val groupKey: Int
+    get() =
+      if (currentGroup < currentEnd)
+        groups.key(address = currentGroup)
+      else
+        0
 
-  /** Determine if the group at [index] has an object key */
-  fun hasObjectKey(index: Int) = groups.hasObjectKey(index)
+  /**
+   * Get the key of the group at [index].
+   *
+   * [index]에 있는 그룹의 키를 가져옵니다.
+   */
+  fun groupKey(index: Int): Int = groups.key(address = index)
+
+  /**
+   * The group slot index is the index into the current groups slots that will be
+   * updated by read by [next].
+   *
+   * 그룹 슬롯 인덱스는 현재 그룹의 슬롯에서 [next] 호출로 읽혀서 갱신될 슬롯의
+   * 인덱스입니다.
+   */
+  val groupSlotIndex: Int
+    get() = currentSlot - groups.slotAnchor(address = parent)
+
+  /**
+   * Determine if the group at [index] has an object key.
+   *
+   * [index]에 있는 그룹이 객체 키를 가지고 있는지 확인합니다.
+   */
+  fun hasObjectKey(index: Int): Boolean = groups.hasObjectKey(address = index)
 
   val hasObjectKey: Boolean
-    get() = currentGroup < currentEnd && groups.hasObjectKey(currentGroup)
-
-  /** Get the object key for the current group or null if no key was provide */
-  val groupObjectKey
-    get() = if (currentGroup < currentEnd) groups.objectKey(currentGroup) else null
-
-  /** Get the object key at [index]. */
-  fun groupObjectKey(index: Int) = groups.objectKey(index)
-
-  /** Get the current group aux data. */
-  val groupAux
-    get() = if (currentGroup < currentEnd) groups.aux(currentGroup) else 0
-
-  /** Get the aux data for the group at [index] */
-  fun groupAux(index: Int) = groups.aux(index)
-
-  /** Get the node associated with the group if there is one. */
-  val groupNode
-    get() = if (currentGroup < currentEnd) groups.node(currentGroup) else null
-
-  /** Get the group key at [anchor]. This return 0 if the anchor is not valid. */
-  fun groupKey(anchor: Anchor) = if (anchor.valid) groups.key(table.anchorIndex(anchor)) else 0
-
-  /** Returns true when the group at [index] was marked with [SlotWriter.markGroup]. */
-  fun hasMark(index: Int) = groups.hasMark(index)
+    get() = currentGroup < currentEnd && groups.hasObjectKey(address = currentGroup)
 
   /**
-   * Returns true if the group contains a group, directly or indirectly, that has been marked by a
-   * call to [SlotWriter.markGroup].
+   * Get the object key for the current group or null if no key was provide.
+   *
+   * 현재 그룹의 객체 키를 가져오거나, 키가 없으면 null을 반환합니다.
    */
-  fun containsMark(index: Int) = groups.containsMark(index)
+  val groupObjectKey: Any?
+    get() =
+      if (currentGroup < currentEnd)
+        groups.objectKey(index = currentGroup)
+      else
+        null
 
-  /** Return the number of nodes where emitted into the current group. */
+  /**
+   * Get the object key at [index].
+   *
+   * [index]에 있는 객체 키를 가져옵니다.
+   */
+  fun groupObjectKey(index: Int): Any? = groups.objectKey(index = index)
+
+  /**
+   * Get the current group aux data.
+   *
+   * 현재 그룹의 aux 데이터를 가져옵니다.
+   */
+  val groupAux: Any?
+    get() =
+      if (currentGroup < currentEnd)
+        groups.aux(index = currentGroup)
+      else
+        0
+
+  /**
+   * Get the aux data for the group at [index].
+   *
+   * [index]에 있는 그룹의 aux 데이터를 가져옵니다.
+   */
+  fun groupAux(index: Int): Any? = groups.aux(index = index)
+
+  /**
+   * Get the node associated with the group if there is one.
+   *
+   * 그룹에 노드가 연결되어 있다면 해당 노드를 가져옵니다.
+   */
+  val groupNode: Any?
+    get() =
+      if (currentGroup < currentEnd)
+        groups.node(index = currentGroup)
+      else
+        null
+
+  /**
+   * Get the group key at [anchor]. This return 0 if the anchor is not valid.
+   *
+   * [anchor]에 있는 그룹 키를 가져옵니다. anchor가 유효하지 않으면 0을 반환합니다.
+   */
+  fun groupKey(anchor: Anchor): Int =
+    if (anchor.valid)
+      groups.key(address = table.anchorIndex(anchor = anchor))
+    else
+      0
+
+  /**
+   * Returns true when the group at [index] was marked with [SlotWriter.markGroup].
+   *
+   * [index]에 있는 그룹이 [SlotWriter.markGroup]으로 표시되었을 때 true를 반환합니다.
+   */
+  fun hasMark(index: Int): Boolean = groups.hasMark(address = index)
+
+  /**
+   * Returns true if the group contains a group, directly or indirectly, that has been
+   * marked by a call to [SlotWriter.markGroup].
+   *
+   * 그룹이 직접 또는 간접적으로 [SlotWriter.markGroup]으로 표시된 그룹을 포함하고 있으면
+   * true를 반환합니다.
+   */
+  fun containsMark(index: Int): Boolean = groups.containsMark(address = index)
+
+  /**
+   * Return the number of nodes where emitted into the current group.
+   *
+   * 현재 그룹에 방출된 노드의 개수를 반환합니다.
+   */
   val parentNodes: Int
-    get() = if (parent >= 0) groups.nodeCount(parent) else 0
+    get() =
+      if (parent >= 0)
+        groups.nodeCount(address = parent)
+      else
+        0
 
-  /** Return the number of slots left to enumerate with [next]. */
-  val remainingSlots
+  /**
+   * Return the number of slots left to enumerate with [next].
+   *
+   * [next]로 열거할 수 있는 남은 슬롯 수를 반환합니다.
+   */
+  val remainingSlots: Int
     get(): Int = currentSlotEnd - currentSlot
 
-  /** Return the index of the parent group of the given group */
+  /**
+   * Return the index of the parent group of the given group.
+   *
+   * 주어진 그룹의 부모 그룹 인덱스를 반환합니다.
+   */
   fun parentOf(index: Int): Int {
     @Suppress("ConvertTwoComparisonsToRangeCheck")
     requirePrecondition(index >= 0 && index < groupsSize) { "Invalid group index $index" }
-    return groups.parentAnchor(index)
+    return groups.parentAnchor(address = index)
   }
 
-  /** Return the number of slots allocated to the [currentGroup] group. */
+  /**
+   * Return the number of slots allocated to the [currentGroup] group.
+   *
+   * [currentGroup] 그룹에 할당된 슬롯 수를 반환합니다.
+   */
   val groupSlotCount: Int
     get() {
       val current = currentGroup
-      val start = groups.slotAnchor(current)
+      val start = groups.slotAnchor(address = current)
       val next = current + 1
-      val end = if (next < groupsSize) groups.dataAnchor(next) else slotsSize
+      val end =
+        if (next < groupsSize)
+          groups.dataAnchor(address = next)
+        else
+          slotsSize
+
       return end - start
     }
 
-  /** Get the value stored at [index] in the parent group's slot. */
-  fun get(index: Int) =
+  /**
+   * Get the value stored at [index] in the parent group's slot.
+   *
+   * 부모 그룹의 슬롯에서 [index] 위치에 저장된 값을 가져옵니다.
+   */
+  fun get(index: Int): Any? =
     (currentSlot + index).let { slotIndex ->
       if (slotIndex < currentSlotEnd) slots[slotIndex] else Composer.Empty
     }
 
-  /** Get the value of the group's slot at [index] for the [currentGroup] group. */
-  fun groupGet(index: Int): Any? = groupGet(currentGroup, index)
+  /**
+   * Get the value of the group's slot at [index] for the [currentGroup] group.
+   *
+   * [currentGroup] 그룹의 슬롯에서 [index] 위치의 값을 가져옵니다.
+   */
+  fun groupGet(index: Int): Any? = groupGet(group = currentGroup, index = index)
 
-  /** Get the slot value of the [group] at [index] */
+  /**
+   * Get the slot value of the [group] at [index].
+   *
+   * [group]의 슬롯에서 [index] 위치의 값을 가져옵니다.
+   */
   fun groupGet(group: Int, index: Int): Any? {
-    val start = groups.slotAnchor(group)
+    val start = groups.slotAnchor(address = group)
     val next = group + 1
-    val end = if (next < groupsSize) groups.dataAnchor(next) else slotsSize
+    val end = if (next < groupsSize) groups.dataAnchor(address = next) else slotsSize
     val address = start + index
+
     return if (address < end) slots[address] else Composer.Empty
   }
 
@@ -1370,141 +1592,250 @@ internal class SlotReader(
    * Get the value of the slot at [currentGroup] or [Composer.Empty] if at then end of a group.
    * During empty mode this value is always [Composer.Empty] which is the value a newly inserted
    * slot.
+   *
+   * [currentGroup]의 슬롯 값을 가져오거나, 그룹의 끝에 도달했을 경우 [Composer.Empty]를 반환합니다.
+   * empty 모드에서는 항상 [Composer.Empty]를 반환하며, 이는 새로 삽입된 슬롯의 기본값입니다.
    */
   fun next(): Any? {
     if (emptyCount > 0 || currentSlot >= currentSlotEnd) {
       hadNext = false
       return Composer.Empty
     }
+
     hadNext = true
+
     return slots[currentSlot++]
   }
 
-  /** `true` if the last call to `next()` returned a slot value and [currentSlot] advanced. */
+  /**
+   * `true` if the last call to `next()` returned a slot value and [currentSlot] advanced.
+   *
+   * 마지막으로 `next()`가 슬롯 값을 반환하고 [currentSlot]이 증가했다면 true를 반환합니다.
+   */
   var hadNext: Boolean = false
     private set
 
   /**
-   * Begin reporting empty for all calls to next() or get(). beginEmpty() can be nested and must
-   * be called with a balanced number of endEmpty()
+   * Begin reporting empty for all calls to `next()` or get(). `beginEmpty()` can be nested and
+   * must be called with a balanced number of `endEmpty()`.
+   *
+   * 모든 `next()`나 `get()` 호출에서 빈 값(Empty)을 반환하도록 시작합니다. `beginEmpty()`는 중첩
+   * 호출이 가능하며, 반드시 같은 횟수의 `endEmpty()` 호출로 균형을 맞춰야 합니다.
    */
   fun beginEmpty() {
     emptyCount++
   }
 
-  /** End reporting [Composer.Empty] for calls to [next] and [get], */
+  /**
+   * End reporting [Composer.Empty] for calls to [next] and [get].
+   *
+   * [next]와 [get] 호출에서 [Composer.Empty]를 반환하던 동작을 종료합니다.
+   */
   fun endEmpty() {
-    requirePrecondition(emptyCount > 0) { "Unbalanced begin/end empty" }
+    requirePrecondition(emptyCount > 0) {
+      // beginEmpty와 endEmpty의 호출 균형이 맞지 않습니다
+      "Unbalanced begin/end empty"
+    }
+
     emptyCount--
   }
 
   /**
    * Close the slot reader. After all [SlotReader]s have been closed the [SlotTable] a
    * [SlotWriter] can be created.
+   *
+   * 슬롯 리더를 닫습니다. 모든 [SlotReader]가 닫힌 후에야 [SlotTable]에서 [SlotWriter]를
+   * 생성할 수 있습니다.
    */
   fun close() {
     closed = true
-    table.close(this, sourceInformationMap)
+    table.close(reader = this, sourceInformationMap = sourceInformationMap)
     slots = emptyArray()
   }
 
-  /** Start a group. */
+  /**
+   * Start a group.
+   *
+   * 그룹을 시작합니다.
+   */
   fun startGroup() {
     if (emptyCount <= 0) {
       val parent = parent
       val currentGroup = currentGroup
-      requirePrecondition(groups.parentAnchor(currentGroup) == parent) {
+
+      requirePrecondition(groups.parentAnchor(address = currentGroup) == parent) {
+        // Invalid slot table detected
         "Invalid slot table detected"
       }
-      sourceInformationMap?.get(anchor(parent))?.reportGroup(table, currentGroup)
+
+      sourceInformationMap?.get(anchor(index = parent))
+        ?.reportGroup(table = table, group = currentGroup)
+
       val currentSlotStack = currentSlotStack
       val currentSlot = currentSlot
       val currentEndSlot = currentSlotEnd
+
       if (currentSlot == 0 && currentEndSlot == 0) {
         currentSlotStack.push(-1)
       } else {
         currentSlotStack.push(currentSlot)
       }
+
       this.parent = currentGroup
-      currentEnd = currentGroup + groups.groupSize(currentGroup)
+      currentEnd = currentGroup + groups.groupSize(address = currentGroup)
+
       this.currentGroup = currentGroup + 1
-      this.currentSlot = groups.slotAnchor(currentGroup)
+      this.currentSlot = groups.slotAnchor(address = currentGroup)
       this.currentSlotEnd =
-        if (currentGroup >= groupsSize - 1) slotsSize
-        else groups.dataAnchor(currentGroup + 1)
+        if (currentGroup >= groupsSize - 1)
+          slotsSize
+        else
+          groups.dataAnchor(address = currentGroup + 1)
     }
   }
 
-  /** Start a group and validate it is a node group */
+  /**
+   * Start a group and validate it is a node group.
+   *
+   * 그룹을 시작하고 해당 그룹이 노드 그룹인지 검증합니다.
+   */
   fun startNode() {
     if (emptyCount <= 0) {
-      requirePrecondition(groups.isNode(currentGroup)) { "Expected a node group" }
+      requirePrecondition(groups.isNode(address = currentGroup)) {
+        // 노드 그룹이어야 합니다
+        "Expected a node group"
+      }
+
       startGroup()
     }
   }
 
-  /** Skip a group. Must be called at the start of a group. */
+  /**
+   * Skip a group. Must be called at the start of a group.
+   *
+   * 그룹을 건너뜁니다. 반드시 그룹의 시작에서 호출되어야 합니다.
+   */
   fun skipGroup(): Int {
-    runtimeCheck(emptyCount == 0) { "Cannot skip while in an empty region" }
-    val count = if (groups.isNode(currentGroup)) 1 else groups.nodeCount(currentGroup)
-    currentGroup += groups.groupSize(currentGroup)
+    runtimeCheck(emptyCount == 0) {
+      // 빈 영역에서는 건너뛸 수 없습니다
+      "Cannot skip while in an empty region"
+    }
+
+    val count =
+      if (groups.isNode(address = currentGroup))
+        1
+      else
+        groups.nodeCount(address = currentGroup)
+
+    currentGroup += groups.groupSize(address = currentGroup)
+
     return count
   }
 
-  /** Skip to the end of the current group. */
+  /**
+   * Skip to the end of the current group.
+   *
+   * 현재 그룹의 끝으로 건너뜁니다.
+   */
   fun skipToGroupEnd() {
-    runtimeCheck(emptyCount == 0) { "Cannot skip the enclosing group while in an empty region" }
+    runtimeCheck(emptyCount == 0) {
+      // 빈 영역에서는 둘러싼 그룹을 건너뛸 수 없습니다
+      "Cannot skip the enclosing group while in an empty region"
+    }
+
     currentGroup = currentEnd
     currentSlot = 0
     currentSlotEnd = 0
   }
 
-  /** Reposition the read to the group at [index]. */
+  /**
+   * Reposition the read to the group at [index].
+   *
+   * 읽기 위치를 [index] 그룹으로 재조정합니다.
+   */
   fun reposition(index: Int) {
-    runtimeCheck(emptyCount == 0) { "Cannot reposition while in an empty region" }
+    runtimeCheck(emptyCount == 0) {
+      // 빈 영역에서는 위치를 재조정할 수 없습니다
+      "Cannot reposition while in an empty region"
+    }
+
     currentGroup = index
-    val parent = if (index < groupsSize) groups.parentAnchor(index) else -1
+
+    val parent =
+      if (index < groupsSize)
+        groups.parentAnchor(address = index)
+      else
+        -1
+
     if (parent != this.parent) {
       this.parent = parent
-      if (parent < 0) this.currentEnd = groupsSize
-      else this.currentEnd = parent + groups.groupSize(parent)
+
+      if (parent < 0)
+        this.currentEnd = groupsSize
+      else
+        this.currentEnd = parent + groups.groupSize(address = parent)
+
       this.currentSlot = 0
       this.currentSlotEnd = 0
     }
   }
 
-  /** Restore the parent to a parent of the current group. */
+  /**
+   * Restore the parent to a parent of the current group.
+   *
+   * 현재 그룹의 부모를 상위 부모로 복원합니다.
+   */
   fun restoreParent(index: Int) {
-    val newCurrentEnd = index + groups.groupSize(index)
+    val newCurrentEnd = index + groups.groupSize(address = index)
     val current = currentGroup
+
     @Suppress("ConvertTwoComparisonsToRangeCheck")
     runtimeCheck(current >= index && current <= newCurrentEnd) {
+      // 인덱스 $index 는 $current 의 부모가 아닙니다
       "Index $index is not a parent of $current"
     }
+
     this.parent = index
     this.currentEnd = newCurrentEnd
     this.currentSlot = 0
     this.currentSlotEnd = 0
   }
 
-  /** End the current group. Must be called after the corresponding [startGroup]. */
+  /**
+   * End the current group. Must be called after the corresponding [startGroup].
+   *
+   * 현재 그룹을 종료합니다. 반드시 대응되는 [startGroup] 이후에 호출되어야 합니다.
+   */
   fun endGroup() {
     if (emptyCount == 0) {
       runtimeCheck(currentGroup == currentEnd) {
+        // endGroup()가 그룹의 끝에서 호출되지 않았습니다
         "endGroup() not called at the end of a group"
       }
-      val parent = groups.parentAnchor(parent)
+
+      val parent = groups.parentAnchor(address = parent)
+
       this.parent = parent
-      currentEnd = if (parent < 0) groupsSize else parent + groups.groupSize(parent)
+
+      currentEnd =
+        if (parent < 0)
+          groupsSize
+        else
+          parent + groups.groupSize(address = parent)
+
       val currentSlotStack = currentSlotStack
       val newCurrentSlot = currentSlotStack.pop()
+
       if (newCurrentSlot < 0) {
         currentSlot = 0
         currentSlotEnd = 0
       } else {
         currentSlot = newCurrentSlot
         currentSlotEnd =
-          if (parent >= groupsSize - 1) slotsSize else groups.dataAnchor(parent + 1)
+          if (parent >= groupsSize - 1)
+            slotsSize
+          else
+            groups.dataAnchor(address = parent + 1)
       }
     }
   }
@@ -1512,62 +1843,96 @@ internal class SlotReader(
   /**
    * Extract the keys from this point to the end of the group. The current is left unaffected.
    * Must be called inside a group.
+   *
+   * 현재 위치부터 그룹의 끝까지 키를 추출합니다. 현재 위치는 변경되지 않습니다. 반드시 그룹
+   * 내부에서 호출되어야 합니다.
    */
   fun extractKeys(): MutableList<KeyInfo> {
     val result = mutableListOf<KeyInfo>()
+
     if (emptyCount > 0) return result
+
     var index = 0
     var childIndex = currentGroup
+
     while (childIndex < currentEnd) {
       result.add(
         KeyInfo(
-          groups.key(childIndex),
-          groups.objectKey(childIndex),
-          childIndex,
-          if (groups.isNode(childIndex)) 1 else groups.nodeCount(childIndex),
-          index++,
-        )
+          key = groups.key(address = childIndex),
+          objectKey = groups.objectKey(index = childIndex),
+          location = childIndex,
+          nodes =
+            if (groups.isNode(address = childIndex))
+              1
+            else
+              groups.nodeCount(address = childIndex),
+          index = index++,
+        ),
       )
-      childIndex += groups.groupSize(childIndex)
+
+      childIndex += groups.groupSize(address = childIndex)
     }
+
     return result
   }
 
   override fun toString(): String =
     "SlotReader(current=$currentGroup, key=$groupKey, parent=$parent, end=$currentEnd)"
 
-  /** Create an anchor to the current reader location or [index]. */
+  /**
+   * Create an anchor to the current reader location or [index].
+   *
+   * 현재 리더 위치 또는 [index]에 대한 앵커를 생성합니다.
+   */
   fun anchor(index: Int = currentGroup): Anchor =
-    table.anchors.getOrAdd(index = index, effectiveSize = groupsSize) { Anchor(location = index) }
+    table.anchors.getOrAdd(index = index, effectiveSize = groupsSize) {
+      Anchor(location = index)
+    }
 
-  private fun IntArray.node(index: Int) =
-    if (isNode(index)) {
-      slots[nodeIndex(index)]
-    } else Composer.Empty
+  private fun IntArray.node(index: Int): Any? =
+    if (isNode(address = index))
+      slots[nodeIndex(address = index)]
+    else
+      Composer.Empty
 
-  private fun IntArray.aux(index: Int) =
-    if (hasAux(index)) {
-      slots[auxIndex(index)]
-    } else Composer.Empty
+  private fun IntArray.aux(index: Int): Any? =
+    if (hasAux(address = index))
+      slots[auxIndex(address = index)]
+    else
+      Composer.Empty
 
-  private fun IntArray.objectKey(index: Int) =
-    if (hasObjectKey(index)) {
-      slots[objectKeyIndex(index)]
-    } else null
+  private fun IntArray.objectKey(index: Int): Any? =
+    if (hasObjectKey(address = index))
+      slots[objectKeyIndex(address = index)]
+    else
+      null
 }
 
 /**
  * Information about groups and their keys.
+ *
  * 그룹과 그 키에 대한 정보입니다.
  */
 internal class KeyInfo(
-  /** The group key. */
+  /**
+   * The group key.
+   *
+   * 그룹 키입니다.
+   */
   val key: Int,
 
-  /** The object key for the group */
+  /**
+   * The object key for the group.
+   *
+   * 그룹의 객체 키입니다.
+   */
   val objectKey: Any?,
 
-  /** The location of the group. */
+  /**
+   * The location of the group.
+   *
+   * 그룹의 위치입니다.
+   */
   val location: Int,
 
   /**
