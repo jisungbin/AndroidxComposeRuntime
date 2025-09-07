@@ -664,6 +664,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
         }
       }
 
+      // RecomposeScopeImpl를 찾을 때까지 부모를 순회함
       current = groups.parentAnchor(address = current)
     }
 
@@ -741,12 +742,13 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
 
       val isNode = groups.isNode(address = group)
 
-      checkPrecondition(value = !isNode || slots[groups.nodeIndex(address = group)] != null) {
-        // $group에서 노드 그룹에 대한 노드가 기록되지 않았습니다.
+      checkPrecondition(!isNode || slots[groups.nodeIndex(address = group)] != null) {
+        // $group에서 노드 그룹의 노드가 기록되지 않았습니다.
         "No node recorded for a node group at $group"
       }
 
       var nodeCount = 0
+
       while (current < end) {
         nodeCount += validateGroup(parent = group, parentEnd = end)
       }
@@ -755,7 +757,8 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
       val expectedSlotCount = groups.groupSize(address = group)
 
       checkPrecondition(expectedNodeCount == nodeCount) {
-        //
+        // $group에서 잘못된 노드 개수가 감지되었습니다. 예상된 노드 개수는 $expectedNodeCount 개인데,
+        // 실제로는 $nodeCount 개가 확인되었습니다.
         "Incorrect node count detected at $group, " +
           "expected $expectedNodeCount, received $nodeCount"
       }
@@ -763,8 +766,8 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
       val actualSlotCount = current - group
 
       checkPrecondition(expectedSlotCount == actualSlotCount) {
-        // $group에서 잘못된 노드 개수가 감지되었습니다. 예상된 노드 개수는 $expectedNodeCount인데,
-        // 실제로는 $nodeCount가 확인되었습니다.
+        // 그룹에서 슬롯 개수가 올바르지 않습니다. 예상된 슬룻 개수는 $expectedSlotCount 개인데,
+        // 실제로는 $actualSlotCount 개가 확인되었습니다.
         "Incorrect slot count detected at $group, expected $expectedSlotCount, received " +
           "$actualSlotCount"
       }
@@ -873,21 +876,25 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * 매우 많은 비용이 들 수 있으므로 [toString]은 피합니다. 또한 디버거에서 이 함수를 호출하는 것은
    * [toString]처럼 암묵적으로 발생해서는 안 됩니다.
    */
-  @Suppress("unused", "MemberVisibilityCanBePrivate")
+  @Suppress("unused")
   fun toDebugString(): String =
-    if (writer) super.toString()
-    else buildString {
-      append(super.toString())
-      append('\n')
+    if (writer)
+      super.toString()
+    else
+      buildString {
+        append(super.toString())
+        append('\n')
 
-      val groupsSize = groupsSize
-      if (groupsSize > 0) {
-        var current = 0
-        while (current < groupsSize) {
-          current += emitGroup(index = current, level = 0)
+        val groupsSize = groupsSize
+        if (groupsSize > 0) {
+          var current = 0
+          while (current < groupsSize) {
+            current += emitGroup(index = current, level = 0)
+          }
+        } else {
+          append("<EMPTY>")
         }
-      } else append("<EMPTY>")
-    }
+      }
 
   /**
    * A helper function used by [toDebugString] to render a particular group.
@@ -913,7 +920,10 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     append(groups.key(address = index))
 
     fun dataIndex(address: Int): Int =
-      if (address >= groupsSize) slotsSize else groups.dataAnchor(address = address)
+      if (address >= groupsSize)
+        slotsSize
+      else
+        groups.dataAnchor(address = address)
 
     val groupSize = groups.groupSize(address = index)
 
@@ -931,6 +941,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
 
     val dataStart = dataIndex(address = index)
     val dataEnd = dataIndex(address = index + 1)
+
     if (dataStart in 0..dataEnd && dataEnd <= slotsSize) {
       if (groups.hasObjectKey(address = index)) {
         append(
@@ -940,15 +951,16 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
         )
       }
 
-      if (groups.isNode(index)) {
+      if (groups.isNode(address = index)) {
         append(" node=${slots[groups.nodeIndex(address = index)].toString().summarize(minSize = 10)}")
       }
 
-      if (groups.hasAux(index)) {
+      if (groups.hasAux(address = index)) {
         append(" aux=${slots[groups.auxIndex(address = index)].toString().summarize(minSize = 10)}")
       }
 
       val slotStart = groups.slotAnchor(address = index)
+
       if (slotStart < dataEnd) {
         append(", slots=[")
         append(slotStart)
@@ -967,6 +979,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
 
     var current = index + 1
     val end = index + groupSize
+
     while (current < end) {
       current += emitGroup(index = current, level = level + 1)
     }
@@ -974,44 +987,86 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     return groupSize
   }
 
-  /** A debugging aid to list all the keys [key] values in the [groups] array. */
-  @Suppress("unused") private fun keys() = groups.keys(groupsSize * Group_Fields_Size)
-
-  /** A debugging aid to list all the [nodeCount] values in the [groups] array. */
-  @Suppress("unused") private fun nodes() = groups.nodeCounts(groupsSize * Group_Fields_Size)
-
-  /** A debugging aid to list all the [parentAnchor] values in the [groups] array. */
+  /**
+   * A debugging aid to list all the keys [key] values in the [groups] array.
+   *
+   * [groups] 배열에서 [key] 값으로 된 모든 키를 나열하는 디버깅 도우미입니다.
+   */
   @Suppress("unused")
-  private fun parentIndexes() = groups.parentAnchors(groupsSize * Group_Fields_Size)
+  private fun keys(): List<Int> =
+    groups.keys(length = groupsSize * Group_Fields_Size)
 
-  /** A debugging aid to list all the indexes into the [slots] array from the [groups] array. */
+  /**
+   * A debugging aid to list all the [nodeCount] values in the [groups] array.
+   *
+   * [groups] 배열에서 모든 [nodeCount] 값을 나열하는 디버깅 도우미입니다.
+   */
   @Suppress("unused")
-  private fun dataIndexes() = groups.dataAnchors(groupsSize * Group_Fields_Size)
+  private fun nodes(): List<Int> =
+    groups.nodeCounts(length = groupsSize * Group_Fields_Size)
 
-  /** A debugging aid to list the [groupsSize] of all the groups in [groups]. */
-  @Suppress("unused") private fun groupSizes() = groups.groupSizes(groupsSize * Group_Fields_Size)
+  /**
+   * A debugging aid to list all the [parentAnchor] values in the [groups] array.
+   *
+   * [groups] 배열에서 모든 [parentAnchor] 값을 나열하는 디버깅 도우미입니다.
+   */
+  @Suppress("unused")
+  private fun parentIndexes(): List<Int> =
+    groups.parentAnchors(length = groupsSize * Group_Fields_Size)
+
+  /**
+   * A debugging aid to list all the indexes into the [slots] array from the [groups] array.
+   *
+   * [groups] 배열에서 [slots] 배열로의 모든 인덱스를 나열하는 디버깅 도우미입니다.
+   */
+  @Suppress("unused")
+  private fun dataIndexes(): List<Int> =
+    groups.dataAnchors(length = groupsSize * Group_Fields_Size)
+
+  /**
+   * A debugging aid to list the [groupsSize] of all the groups in [groups].
+   *
+   * [groups] 배열에 있는 모든 그룹의 [groupsSize]를 나열하는 디버깅 도우미입니다.
+   */
+  @Suppress("unused")
+  private fun groupSizes(): List<Int> =
+    groups.groupSizes(length = groupsSize * Group_Fields_Size)
 
   @Suppress("unused")
   internal fun slotsOf(group: Int): List<Any?> {
-    val start = groups.dataAnchor(group)
-    val end = if (group + 1 < groupsSize) groups.dataAnchor(group + 1) else slots.size
+    val start = groups.dataAnchor(address = group)
+    val end =
+      if (group + 1 < groupsSize)
+        groups.dataAnchor(address = group + 1)
+      else
+        slots.size
+
     return slots.toList().subList(start, end)
   }
 
   internal fun slot(group: Int, slotIndex: Int): Any? {
-    val start = groups.slotAnchor(group)
-    val end = if (group + 1 < groupsSize) groups.dataAnchor(group + 1) else slots.size
+    val start = groups.slotAnchor(address = group)
+    val end =
+      if (group + 1 < groupsSize)
+        groups.dataAnchor(address = group + 1)
+      else
+        slots.size
     val len = end - start
-    return if (slotIndex in 0 until len) return slots[start + slotIndex] else Composer.Empty
+
+    return if (slotIndex in 0 until len)
+      slots[start + slotIndex]
+    else
+      Composer.Empty
   }
 
   override val compositionGroups: Iterable<CompositionGroup>
     get() = this
 
-  override fun iterator(): Iterator<CompositionGroup> = GroupIterator(this, 0, groupsSize)
+  override fun iterator(): Iterator<CompositionGroup> =
+    GroupIterator(table = this, start = 0, end = groupsSize)
 
   override fun find(identityToFind: Any): CompositionGroup? =
-    SlotTableGroup(this, 0).find(identityToFind)
+    SlotTableGroup(table = this, address = 0).find(identityToFind = identityToFind)
 }
 
 /**
@@ -5882,6 +5937,14 @@ private inline fun IntArray.hasObjectKey(address: Int): Boolean =
 
 private fun IntArray.objectKeyIndex(address: Int): Int =
   this[address * Group_Fields_Size + DataAnchor_Offset] +
+    // 새로운 그룹을 추가할 때 아래처럼 slotIndex++로 데이터를 저장함
+    //
+    //    if (isNode) slots[currentSlot++] = aux
+    //    if (hasObjectKey) slots[currentSlot++] = objectKey
+    //    if (hasAux) slots[currentSlot++] = aux
+    //
+    // 즉, 실제로 shift 거리와는 무관하게 데이터가 저장되므로, 앞에 무슨 데이터가
+    // 저장되었는지를 계산하여 추가 shift을 해주어야 함. 따라서 countOneBits는 유효함.
     countOneBits(groupInfo(address = address) shr (ObjectKey_Shift + 1))
 
 private inline fun IntArray.hasAux(address: Int): Boolean =
@@ -5951,8 +6014,6 @@ private fun IntArray.slotAnchor(address: Int): Int =
     //   - ds는 그룹에 group data 슬롯이 있는지를 나타냅니다. (Aux에 해당)
     countOneBits(groupInfo(address = address) shr Slots_Shift)
 
-// STUDY countOneBits로 address 계산하는 전략이 어떻게 유효한 걸까???
-//  기존에 0이었던 비트가 1로 바뀔 때마다 address를 모두 갱신하나?????
 private inline fun countOneBits(value: Int): Int = value.countOneBits()
 
 // Key access
