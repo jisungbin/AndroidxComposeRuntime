@@ -1262,7 +1262,7 @@ internal class CompositionImpl(
     if (!slotTable.ownsAnchor(anchor)) {
       // The scope might be owned by the delegate
       val delegate = synchronized(lock) { invalidationDelegate }
-      if (delegate?.tryImminentInvalidation(scope, instance) == true)
+      if (delegate?.tryImminentInvalidation(scope = scope, instance = instance) == true)
         return InvalidationResult.IMMINENT // The scope was owned by the delegate
 
       return InvalidationResult.IGNORED // The scope has not yet entered the composition

@@ -431,19 +431,33 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * [anchor]가 [groupIndex]의 그룹이나 그 자식 그룹 중 하나를 가리키면 true를 반환합니다.
    */
   fun groupContainsAnchor(groupIndex: Int, anchor: Anchor): Boolean {
-    runtimeCheck(!writer) { "Writer is active" }
-    runtimeCheck(groupIndex in 0 until groupsSize) { "Invalid group index" }
+    runtimeCheck(!writer) {
+      // writer가 활성화된 상태입니다
+      "Writer is active"
+    }
+
+    runtimeCheck(groupIndex in 0 until groupsSize) {
+      // 잘못된 그룹 인덱스입니다
+      "Invalid group index"
+    }
 
     return ownsAnchor(anchor = anchor) &&
       anchor.location in groupIndex until (groupIndex + groups.groupSize(address = groupIndex))
   }
 
-  /** Close [reader]. */
+  /**
+   * Close [reader].
+   *
+   * [reader]를 닫습니다.
+   */
   internal fun close(
     reader: SlotReader,
     sourceInformationMap: HashMap<Anchor, GroupSourceInformation>?,
   ) {
-    runtimeCheck(reader.table === this && readers > 0) { "Unexpected reader close()" }
+    runtimeCheck(reader.table === this && readers > 0) {
+      // reader가 올바르지 않은 시점에 close() 되었습니다
+      "Unexpected reader close()"
+    }
 
     readers--
 
@@ -478,7 +492,10 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
     sourceInformationMap: HashMap<Anchor, GroupSourceInformation>?,
     calledByMap: MutableIntObjectMap<MutableIntSet>?,
   ) {
-    requirePrecondition(writer.table === this && this.writer) { "Unexpected writer close()" }
+    requirePrecondition(writer.table === this && this.writer) {
+      // writer가 올바르지 않은 시점에 close() 되었습니다
+      "Unexpected writer close()"
+    }
 
     this.writer = false
 
@@ -540,18 +557,15 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * 이는 현재 Live Edit과 같은 개발자 도구에서만 사용되며, 동일한 구조를 더 이상 유지하지 않을
    * 것으로 예상되는 그룹을 재구성 전에 제거하기 위해 사용됩니다.
    *
-   * 성공적으로 무효화되면 그룹들의 목록을 반환합니다. null을 반환하면 전체 composition을 강제로
+   * 성공적으로 무효화되면 그룹들의 목록을 반환합니다. null을 반환하면 전체 컴포지션을 무조건
    * 수행해야 합니다.
    */
+  // MEMO 컴포저블 무효화 핵심 로직
   internal fun invalidateGroupsWithKey(target: Int): List<RecomposeScopeImpl>? {
     val anchors = mutableListOf<Anchor>()
     val scopes = mutableListOf<RecomposeScopeImpl>()
     var allScopesFound = true
-    val set =
-      MutableIntSet().also {
-        it.add(target)
-        it.add(LIVE_EDIT_INVALID_KEY)
-      }
+    val set = mutableIntSetOf(target, LIVE_EDIT_INVALID_KEY)
 
     calledByMap?.get(target)?.let(set::addAll)
 
@@ -637,6 +651,7 @@ internal class SlotTable : CompositionData, Iterable<CompositionGroup> {
    * 재구성되도록 합니다. 이 과정에서 [group]과 restartable 그룹 사이에 있는
    * non-restartable recompose scope들도 강제로 재구성됩니다.
    */
+  // MEMO 핵심!!
   private fun findEffectiveRecomposeScope(group: Int): RecomposeScopeImpl? {
     var current = group
     while (current > 0) {
@@ -1356,22 +1371,29 @@ internal class SlotReader(
     get() = groups.groupSize(address = currentGroup)
 
   /**
-   * Get the size of the group at [index]. Will throw an exception if [index] is not a group
-   * start.
+   * Get the size of the group at [index]. Will throw an exception if [index] is
+   * not a group start.
    *
-   * [index]에 있는 그룹의 크기를 가져옵니다. [index]가 그룹의 시작이 아니면 예외를 던집니다.
+   * [index]에 있는 그룹의 크기를 가져옵니다. [index]가 그룹의 시작이 아니면
+   * 예외를 던집니다.
    */
   fun groupSize(index: Int): Int = groups.groupSize(address = index)
 
   /**
-   * Get the slot size for [group]. Will throw an exception if [group] is not a group start.
+   * Get the slot size for [group]. Will throw an exception if [group] is not
+   * a group start.
    *
-   * [group]의 슬롯 크기를 가져옵니다. [group]이 그룹의 시작이 아니면 예외를 던집니다.
+   * [group]의 슬롯 크기를 가져옵니다. [group]이 그룹의 시작이 아니면 예외를
+   * 던집니다.
    */
   fun slotSize(group: Int): Int {
     val start = groups.slotAnchor(address = group)
     val next = group + 1
-    val end = if (next < groupsSize) groups.dataAnchor(address = next) else slotsSize
+    val end =
+      if (next < groupsSize)
+        groups.dataAnchor(address = next)
+      else
+        slotsSize
 
     return end - start
   }
@@ -1534,7 +1556,10 @@ internal class SlotReader(
    */
   fun parentOf(index: Int): Int {
     @Suppress("ConvertTwoComparisonsToRangeCheck")
-    requirePrecondition(index >= 0 && index < groupsSize) { "Invalid group index $index" }
+    requirePrecondition(index >= 0 && index < groupsSize) {
+      "Invalid group index $index"
+    }
+
     return groups.parentAnchor(address = index)
   }
 
@@ -1564,7 +1589,10 @@ internal class SlotReader(
    */
   fun get(index: Int): Any? =
     (currentSlot + index).let { slotIndex ->
-      if (slotIndex < currentSlotEnd) slots[slotIndex] else Composer.Empty
+      if (slotIndex < currentSlotEnd)
+        slots[slotIndex]
+      else
+        Composer.Empty
     }
 
   /**
@@ -1582,7 +1610,11 @@ internal class SlotReader(
   fun groupGet(group: Int, index: Int): Any? {
     val start = groups.slotAnchor(address = group)
     val next = group + 1
-    val end = if (next < groupsSize) groups.dataAnchor(address = next) else slotsSize
+    val end =
+      if (next < groupsSize)
+        groups.dataAnchor(address = next)
+      else
+        slotsSize
     val address = start + index
 
     return if (address < end) slots[address] else Composer.Empty
@@ -1664,7 +1696,7 @@ internal class SlotReader(
       val currentGroup = currentGroup
 
       requirePrecondition(groups.parentAnchor(address = currentGroup) == parent) {
-        // Invalid slot table detected
+        // 잘못된 슬롯 테이블이 감지되었습니다
         "Invalid slot table detected"
       }
 
@@ -1759,8 +1791,8 @@ internal class SlotReader(
       "Cannot reposition while in an empty region"
     }
 
-    currentGroup = index
 
+    currentGroup = index
     val parent =
       if (index < groupsSize)
         groups.parentAnchor(address = index)
@@ -1770,13 +1802,14 @@ internal class SlotReader(
     if (parent != this.parent) {
       this.parent = parent
 
-      if (parent < 0)
-        this.currentEnd = groupsSize
-      else
-        this.currentEnd = parent + groups.groupSize(address = parent)
+      currentEnd =
+        if (parent < 0)
+          groupsSize
+        else
+          parent + groups.groupSize(address = parent)
 
-      this.currentSlot = 0
-      this.currentSlotEnd = 0
+      currentSlot = 0
+      currentSlotEnd = 0
     }
   }
 
@@ -1911,7 +1944,7 @@ internal class SlotReader(
 /**
  * Information about groups and their keys.
  *
- * 그룹과 그 키에 대한 정보입니다.
+ * 그룹과 그 키의 정보입니다.
  */
 internal class KeyInfo(
   /**
@@ -5918,6 +5951,8 @@ private fun IntArray.slotAnchor(address: Int): Int =
     //   - ds는 그룹에 group data 슬롯이 있는지를 나타냅니다. (Aux에 해당)
     countOneBits(groupInfo(address = address) shr Slots_Shift)
 
+// STUDY countOneBits로 address 계산하는 전략이 어떻게 유효한 걸까???
+//  기존에 0이었던 비트가 1로 바뀔 때마다 address를 모두 갱신하나?????
 private inline fun countOneBits(value: Int): Int = value.countOneBits()
 
 // Key access

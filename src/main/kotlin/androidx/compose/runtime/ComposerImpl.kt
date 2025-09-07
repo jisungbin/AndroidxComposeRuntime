@@ -1655,6 +1655,11 @@ internal class ComposerImpl(
    * after the group is started but on or before the first child group. It is intended to be
    * called instead of [skipReaderToGroupEnd] if any child groups are invalid. If no children are
    * invalid it will call [skipReaderToGroupEnd].
+   *
+   * 현재 부모 그룹의 무효화된 자식 그룹들을 다시 컴포즈합니다. 이 메서드는 그룹이 시작된 후,
+   * 그러나 첫 번째 자식 그룹이 시작되기 전까지 호출되어야 합니다. 자식 그룹 중 하나라도 무효화된
+   * 경우 [skipReaderToGroupEnd] 대신 호출하도록 설계되었습니다. 만약 자식 그룹이 모두 유효하다면
+   * [skipReaderToGroupEnd]를 호출합니다.
    */
   private fun recomposeToGroupEnd() {
     val wasComposing = isComposing
