@@ -483,6 +483,9 @@ internal class CompositionImpl(
   /**
    * A map of observable objects to the [RecomposeScope]s that observe the object. If the key
    * object is modified the associated scopes should be invalidated.
+   *
+   * 관찰 가능한 객체와 그 객체를 관찰하는 [RecomposeScope]들의 매핑입니다. 키 객체가 수정되면
+   * 연결된 스코프들이 무효화되어야 합니다.
    */
   private val observations = ScopeMap<Any, RecomposeScopeImpl>()
 
@@ -1342,13 +1345,14 @@ internal class CompositionImpl(
   }
 
   internal fun removeObservation(instance: Any, scope: RecomposeScopeImpl) {
-    observations.remove(instance, scope)
+    observations.remove(key = instance, scope = scope)
   }
 
   internal fun removeDerivedStateObservation(state: DerivedState<*>) {
-    // remove derived state if it is not observed in other scopes
+    // remove derived state if it is not observed in other scopes.
+    // 다른 스코프에서 관찰되지 않는 경우 파생 상태를 제거합니다.
     if (state !in observations) {
-      derivedStates.removeScope(state)
+      derivedStates.removeScope(scope = state)
     }
   }
 
@@ -1425,7 +1429,7 @@ internal class CompositionImpl(
   }
 
   // This is only used in tests to ensure the stacks do not silently leak.
-  internal fun composerStacksSizes(): Int = composer.stacksSize()
+  @TestOnly internal fun composerStacksSizes(): Int = composer.stacksSize()
 }
 
 internal object ScopeInvalidated

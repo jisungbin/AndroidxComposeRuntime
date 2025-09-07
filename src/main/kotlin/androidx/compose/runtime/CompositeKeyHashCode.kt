@@ -61,6 +61,15 @@ inline fun CompositeKeyHashCode(initial: Int): CompositeKeyHashCode = initial.to
  * functions in this file.
  *
  * The standard implementation of this is `(this rol shift) xor segment`.
+ *
+ *
+ * 이 함수는 Composer에서 사용하는 해싱 연산을 구현합니다.
+ *
+ * 위에서 아래로 누적되는 해시를 정의합니다. 이 해시는 수신 해시에 [segment]를 결합하고 [shift]를
+ * 적용하여 계산합니다. 이러한 연산의 순서와 적용 방식은 임의적이지만, 이 파일에 있는 다른 함수들과
+ * 일관성을 유지해야 합니다.
+ *
+ * 표준 구현은 `(this rol shift) xor segment`입니다.
  */
 internal fun CompositeKeyHashCode.compoundWith(
   segment: Int,
@@ -123,6 +132,19 @@ internal fun CompositeKeyHashCode.bottomUpCompoundWith(
  * This implementation must be consistent with [compoundWith] such that building both hashes in
  * opposite directions always returns the same value. Given the standard implementation of
  * [compoundWith], this function should be implemented as: `this xor (segment rol shift)`
+ *
+ *
+ * 이 함수는 Composer에서 사용하는 해싱 연산을 구현합니다.
+ *
+ * [compoundWith]를 하향식이 아닌 상향식 해시로 구현합니다. 이 과정에서는 수신자와 [segment] 인자의
+ * 순서를 바꿔서, 컴포지션 계층에서 자식 위치로부터 알려진 부모 방향으로 해시를 구축합니다.
+ *
+ * 호출자는 [shift] 값을 지정해야 하며, 각 세그먼트가 상향식이 아니라 상위에서 하위로 해시를 만들었을
+ * 때와 동일한 누적 시프트 값을 갖도록 해야 합니다. 이 값은 세그먼트의 증가 시프트 값과 자식으로부터
+ * 결합된 요소까지의 거리의 곱입니다. [shift]는 [CompositeKeyHashSizeBits]보다 작아야 합니다.
+ *
+ * 이 구현은 [compoundWith]와 일관성을 유지해야 하며, 두 방향으로 해시를 구축했을 때 항상 동일한 값을
+ * 반환해야 합니다. 표준 [compoundWith] 구현에 따르면 이 함수는 `this xor (segment rol shift)`로 구현됩니다.
  */
 internal fun CompositeKeyHashCode.bottomUpCompoundWith(
   segment: CompositeKeyHashCode,

@@ -79,8 +79,13 @@ private val callbackLock = makeSynchronizedObject()
 /**
  * A RecomposeScope is created for a region of the composition that can be recomposed independently
  * of the rest of the composition. The composer will position the slot table to the location stored
- * in [anchor] and call [block] when recomposition is requested. It is created by
- * [Composer.startRestartGroup] and is used to track how to restart the group.
+ * in [anchor] and call [block] when recomposition is requested. It is created by [Composer.startRestartGroup]
+ * and is used to track how to restart the group.
+ *
+ * RecomposeScope는 컴포지션의 특정 영역을 위해 생성되며, 나머지 컴포지션과 독립적으로 리컴포즈될
+ * 수 있습니다. 컴포저는 슬롯 테이블을 [anchor]에 저장된 위치로 옮기고, 리컴포지션이 요청되면
+ * [block]을 호출합니다. 이는 [Composer.startRestartGroup]에 의해 생성되며, 그룹을 어떻게 다시
+ * 시작할지를 추적하는 데 사용됩니다.
  */
 internal class RecomposeScopeImpl(internal var owner: RecomposeScopeOwner?) :
   ScopeUpdateScope, RecomposeScope {
@@ -324,22 +329,33 @@ internal class RecomposeScopeImpl(internal var owner: RecomposeScopeOwner?) :
    * Determine if the scope should be considered invalid.
    *
    * @param instances The set of objects reported as invalidating this scope.
+   *
+   *
+   * 스코프를 무효로 간주해야 하는지 확인합니다.
+   *
+   * @param instances 이 스코프를 무효화하는 것으로 보고된 객체들의 집합입니다.
    */
   fun isInvalidFor(instances: Any? /* State | ScatterSet<State> | null */): Boolean {
     // If a non-empty instances exists and contains only derived state objects with their
     // default values, then the scope should not be considered invalid. Otherwise the scope
     // should if it was invalidated by any other kind of instance.
+    //
+    // 비어 있지 않은 인스턴스가 존재하고 그 안에 기본값을 가진 파생 상태 객체만 포함되어 있다면,
+    // 스코프는 무효로 간주되지 않습니다. 그렇지 않고 다른 종류의 인스턴스에 의해 무효화되었다면
+    // 스코프는 무효로 처리됩니다.
     if (instances == null) return true
+
     val trackedDependencies = trackedDependencies ?: return true
 
     return when (instances) {
       is DerivedState<*> -> {
-        instances.checkDerivedStateChanged(trackedDependencies)
+        instances.checkDerivedStateChanged(dependencies = trackedDependencies)
       }
       is ScatterSet<*> -> {
         instances.isNotEmpty() &&
           instances.any {
-            it !is DerivedState<*> || it.checkDerivedStateChanged(trackedDependencies)
+            it !is DerivedState<*> ||
+              it.checkDerivedStateChanged(dependencies = trackedDependencies)
           }
       }
       else -> true
@@ -351,6 +367,7 @@ internal class RecomposeScopeImpl(internal var owner: RecomposeScopeOwner?) :
   ): Boolean {
     @Suppress("UNCHECKED_CAST")
     this as DerivedState<Any?>
+
     val policy = policy ?: structuralEqualityPolicy()
     return !policy.equivalent(currentRecord.currentValue, dependencies[this])
   }
@@ -372,15 +389,22 @@ internal class RecomposeScopeImpl(internal var owner: RecomposeScopeOwner?) :
    * Called when composition is completed for this scope. The [token] is the same token passed in
    * the previous call to [start]. If [end] returns a non-null value the lambda returned will be
    * called during [ControlledComposition.applyChanges].
+   *
+   * 이 스코프의 컴포지션이 완료되면 호출됩니다. [token]은 이전에 [start] 호출에 전달된 것과 동일한
+   * 토큰입니다. [end]가 null이 아닌 값을 반환하면, 그 반환된 람다는 [ControlledComposition.applyChanges] 중에
+   * 호출됩니다.
    */
-  fun end(token: Int): ((Composition) -> Unit)? {
-    return trackedInstances?.let { instances ->
+  fun end(token: Int): ((Composition) -> Unit)? =
+    trackedInstances?.let { instances ->
       // If any value previous observed was not read in this current composition
       // schedule the value to be removed from the observe scope and removed from the
-      // observations tracked by the composition.
-      // [skipped] is true if the scope was skipped. If the scope was skipped we should
-      // leave the observations unmodified.
-      if (!skipped && instances.any { _, instanceToken -> instanceToken != token })
+      // observations tracked by the composition. [skipped] is true if the scope was
+      // skipped. If the scope was skipped we should leave the observations unmodified.
+      //
+      // 이전 컴포지션에서 관찰된 값이 이번 컴포지션에서 읽히지 않았다면, 그 값을 관찰
+      // 스코프에서 제거하고 컴포지션이 추적하는 관찰 목록에서도 제거하도록 스케줄링합니다.
+      // [skipped]가 true이면 스코프가 건너뛰어진 것이므로 관찰 항목은 수정하지 않아야 합니다.
+      if (!skipped && instances.any { _, instanceToken -> instanceToken != token }) {
         { composition ->
           if (
             currentToken == token &&
@@ -390,21 +414,25 @@ internal class RecomposeScopeImpl(internal var owner: RecomposeScopeOwner?) :
             instances.removeIf { instance, instanceToken ->
               val shouldRemove = instanceToken != token
               if (shouldRemove) {
-                composition.removeObservation(instance, this)
+                composition.removeObservation(instance = instance, scope = this)
+
                 if (instance is DerivedState<*>) {
-                  composition.removeDerivedStateObservation(instance)
-                  trackedDependencies?.remove(instance)
+                  composition.removeDerivedStateObservation(state = instance)
+                  trackedDependencies?.remove(key = instance)
                 }
               }
+
               shouldRemove
             }
           }
         }
-      else null
+      } else {
+        null
+      }
     }
-  }
 
-  @Suppress("NOTHING_TO_INLINE") private inline fun getFlag(flag: Int) = flags and flag != 0
+  @Suppress("NOTHING_TO_INLINE")
+  private inline fun getFlag(flag: Int) = flags and flag != 0
 
   @Suppress("NOTHING_TO_INLINE")
   private inline fun setFlag(flag: Int, value: Boolean) {

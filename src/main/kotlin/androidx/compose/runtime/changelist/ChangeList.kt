@@ -125,8 +125,13 @@ internal class ChangeList : OperationsDebugStringFormattable() {
   }
 
   fun pushAppendValue(anchor: Anchor, value: Any?) {
-    operations.push(AppendValue) {
-      setObjects(AppendValue.Anchor, anchor, AppendValue.Value, value)
+    operations.push(operation = AppendValue) {
+      setObjects(
+        parameter1 = AppendValue.Anchor,
+        value1 = anchor,
+        parameter2 = AppendValue.Value,
+        value2 = value,
+      )
     }
   }
 

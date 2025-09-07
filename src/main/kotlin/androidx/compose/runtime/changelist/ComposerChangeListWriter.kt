@@ -212,12 +212,18 @@ internal class ComposerChangeListWriter(
 
   fun updateAnchoredValue(value: Any?, anchor: Anchor, groupSlotIndex: Int) {
     // Because this uses an anchor, it can be performed without positioning the writer.
-    changeList.pushUpdateAnchoredValue(value, anchor, groupSlotIndex)
+    // 앵커를 사용하기 때문에 라이터의 위치를 옮기지 않고도 수행할 수 있습니다.
+    changeList.pushUpdateAnchoredValue(
+      value = value,
+      anchor = anchor,
+      groupSlotIndex = groupSlotIndex,
+    )
   }
 
   fun appendValue(anchor: Anchor, value: Any?) {
     // Because this uses an anchor, it can be performed without positioning the writer.
-    changeList.pushAppendValue(anchor, value)
+    // 앵커를 사용하기 때문에 라이터의 위치를 옮기지 않고도 실행할 수 있습니다.
+    changeList.pushAppendValue(anchor = anchor, value = value)
   }
 
   fun trimValues(count: Int) {
@@ -261,13 +267,15 @@ internal class ComposerChangeListWriter(
   }
 
   fun removeCurrentGroup() {
-    /*
-      When a group is removed the reader will move but the writer will not so to ensure both
-      the writer and reader are tracking the same slot we advance `writersReaderDelta` to
-      account for the removal.
-    */
+    // When a group is removed the reader will move but the writer will not so to ensure both
+    // the writer and reader are tracking the same slot we advance `writersReaderDelta` to
+    // account for the removal.
+    //
+    // 그룹이 제거되면 리더는 이동하지만 라이터는 이동하지 않습니다. 따라서 라이터와 리더가 같은
+    // 슬롯을 추적하도록 하기 위해, 제거된 만큼을 반영하여 writersReaderDelta를 증가시킵니다.
     pushSlotEditingOperationPreamble()
     changeList.pushRemoveCurrentGroup()
+
     writersReaderDelta += reader.groupSize
   }
 

@@ -5828,6 +5828,7 @@ private class SourceInformationGroupIterator(
 // 부모가 -1인 값은 루트 부모 인덱스로 예약되어 있으므로, 앵커는 -2를 기준으로 해야 합니다.
 //
 // STUDY 이 상수 이해하기....
+//  ComposerImpl.insertedGroupVirtualIndex() 구현에도 -2 매직넘버가 쓰였다.
 private const val ParentAnchorPivot = -2
 
 // Group layout

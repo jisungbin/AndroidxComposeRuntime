@@ -22,7 +22,11 @@ internal interface ValueHolder<T> {
   fun toProvided(local: CompositionLocal<T>): ProvidedValue<T>
 }
 
-/** A StaticValueHolder holds a value that will never change. */
+/**
+ * A StaticValueHolder holds a value that will never change.
+ *
+ * StaticValueHolder는 절대 변경되지 않는 값을 보관합니다.
+ */
 internal data class StaticValueHolder<T>(val value: T) : ValueHolder<T> {
   override fun readValue(map: PersistentCompositionLocalMap): T = value
 

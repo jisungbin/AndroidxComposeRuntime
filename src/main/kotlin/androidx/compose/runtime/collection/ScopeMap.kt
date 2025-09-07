@@ -98,7 +98,8 @@ internal value class ScopeMap<Key : Any, Scope : Any>(
     val value = map[key] ?: return false
     return when (value) {
       is MutableScatterSet<*> -> {
-        @Suppress("UNCHECKED_CAST") val set = value as MutableScatterSet<Scope>
+        @Suppress("UNCHECKED_CAST")
+        val set = value as MutableScatterSet<Scope>
 
         val removed = set.remove(scope)
         if (removed && set.isEmpty()) {

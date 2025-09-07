@@ -67,7 +67,8 @@ internal fun Throwable.tryAttachComposeStackTrace(
 
 internal fun Throwable.attachComposeStackTrace(
   trace: () -> List<ComposeStackTraceFrame>,
-): Throwable = apply { tryAttachComposeStackTrace(trace) }
+): Throwable =
+  apply { tryAttachComposeStackTrace(trace) }
 
 @OptIn(ComposeToolingApi::class)
 internal fun StringBuilder.appendStackTrace(trace: List<ComposeStackTraceFrame>) {

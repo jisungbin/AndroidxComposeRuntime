@@ -70,6 +70,9 @@ private class GroupInfo(
  * Pending starts when the key is different than expected indicating that the structure of the tree
  * changed. It is used to determine how to update the nodes and the slot table when changes to the
  * structure of the tree is detected.
+ *
+ * 예상된 키와 다를 때, 즉 트리의 구조가 변경되었음을 나타낼 때 보류 상태가 시작됩니다. 이는 트리
+ * 구조의 변경이 감지되었을 때 노드와 슬롯 테이블을 어떻게 갱신할지 결정하는 데 사용됩니다.
  */
 private class Pending(val keyInfos: MutableList<KeyInfo>, val startIndex: Int) {
   var groupIndex: Int = 0
@@ -103,14 +106,18 @@ private class Pending(val keyInfos: MutableList<KeyInfo>, val startIndex: Int) {
     }
   }
 
-  /** Get the next key information for the given key. */
+  /**
+   * Get the next key information for the given key.
+   *
+   * 주어진 키의 다음 키 정보를 가져옵니다.
+   */
   fun getNext(key: Int, dataKey: Any?): KeyInfo? {
-    val joinedKey: Any = if (dataKey != null) JoinedKey(key, dataKey) else key
-    return keyMap.removeFirst(joinedKey)
+    val joinedKey: Any = if (dataKey != null) JoinedKey(left = key, right = dataKey) else key
+    return keyMap.removeFirst(key = joinedKey)
   }
 
   /** Record that this key info was generated. */
-  fun recordUsed(keyInfo: KeyInfo) = usedKeys.add(keyInfo)
+  fun recordUsed(keyInfo: KeyInfo): Boolean = usedKeys.add(keyInfo)
 
   val used: List<KeyInfo>
     get() = usedKeys
@@ -174,21 +181,29 @@ private class Pending(val keyInfos: MutableList<KeyInfo>, val startIndex: Int) {
   }
 
   @OptIn(InternalComposeApi::class)
-  fun slotPositionOf(keyInfo: KeyInfo) = groupInfos[keyInfo.location]?.slotIndex ?: -1
+  fun slotPositionOf(keyInfo: KeyInfo): Int = groupInfos[keyInfo.location]?.slotIndex ?: -1
 
   @OptIn(InternalComposeApi::class)
-  fun nodePositionOf(keyInfo: KeyInfo) = groupInfos[keyInfo.location]?.nodeIndex ?: -1
+  fun nodePositionOf(keyInfo: KeyInfo): Int = groupInfos[keyInfo.location]?.nodeIndex ?: -1
 
   @OptIn(InternalComposeApi::class)
-  fun updatedNodeCountOf(keyInfo: KeyInfo) =
+  fun updatedNodeCountOf(keyInfo: KeyInfo): Int =
     groupInfos[keyInfo.location]?.nodeCount ?: keyInfo.nodes
 }
 
 private class Invalidation(
-  /** The recompose scope being invalidate */
+  /**
+   * The recompose scope being invalidate.
+   *
+   * 무효화되고 있는 리컴포즈 스코프입니다.
+   */
   val scope: RecomposeScopeImpl,
 
-  /** The index of the group in the slot table being invalidated. */
+  /**
+   * The index of the group in the slot table being invalidated.
+   *
+   * 무효화되고 있는 슬롯 테이블 내 그룹의 인덱스입니다.
+   **/
   var location: Int,
 
   /**
@@ -198,10 +213,18 @@ private class Invalidation(
    * scope as invalid if the instance has changed.
    *
    * Can contain a [ScatterSet] of instances, single instance or null.
+   *
+   *
+   * 스코프를 무효화하는 인스턴스들입니다. 값이 null이거나 비어 있으면 스코프는 무조건
+   * 무효가 됩니다. 인스턴스를 포함하고 있으면 그중 하나라도 변경된 경우에만 무효로 간주됩니다.
+   * 이는 `DerivedState<*>` 변경을 추적하고, 인스턴스가 실제로 바뀌었을 때만 스코프를 무효로
+   * 처리하기 위해 사용됩니다.
+   *
+   * [ScatterSet] 형태의 인스턴스 집합, 단일 인스턴스, 또는 null을 가질 수 있습니다.
    */
   var instances: Any?,
 ) {
-  fun isInvalid(): Boolean = scope.isInvalidFor(instances)
+  fun isInvalid(): Boolean = scope.isInvalidFor(instances = instances)
 }
 
 /** Implementation of a composer for a mutable tree. */
@@ -227,6 +250,7 @@ internal class ComposerImpl(
   private var pending: Pending? = null
   private var nodeIndex: Int = 0
   private var groupNodeCount: Int = 0
+  // MEMO rGroup is readGroup ????
   private var rGroupIndex: Int = 0
   private val parentStateStack = IntStack()
   private var nodeCountOverrides: IntArray? = null
@@ -281,7 +305,7 @@ internal class ComposerImpl(
       if (parentContext.collectingCallByInformation) collectCalledByInformation()
     }
 
-  private var writer: SlotWriter = insertTable.openWriter().also { it.close(true) }
+  private var writer: SlotWriter = insertTable.openWriter().also { it.close(normalClose = true) }
   private var writerHasAProvider = false
   private var providerCache: PersistentCompositionLocalMap? = null
   internal var deferredChanges: ChangeList? = null
@@ -324,9 +348,35 @@ internal class ComposerImpl(
    * @see [endReplaceableGroup]
    * @see [startMovableGroup]
    * @see [startRestartGroup]
+   *
+   *
+   * 슬롯 테이블의 현재 실행 위치에 “Replaceable Group” 시작 마커를 삽입합니다. Replaceable Group은
+   * 형제 그룹 사이에서 이동할 수는 없지만 제거하거나 삽입할 수 있는 그룹입니다. 이러한 그룹은
+   * 컴파일러가 if 표현식, when 표현식, 조기 반환, null 병합 연산자 같은 Composable 함수의 조건
+   * 분기 주위에 삽입합니다.
+   *
+   * [startReplaceableGroup] 호출은 반드시 대응하는 [endReplaceableGroup] 호출로 닫혀야 합니다.
+   *
+   * 경고: 이 함수를 호출하는 코드를 생성하는 컴파일러 버전에는, 컴포저블 람다만 생성하는 루프
+   * (예: androidx.compose.animation.AnimatedContent)를 그룹으로 감싸지 않는 버그가 있습니다.
+   * 이 경우 그룹을 교체하는 것이 안전하지 않으므로, 이를 Movable Group처럼 다뤄야 합니다. 이 문제를
+   * 해결하기 위해 [startReplaceGroup]이 추가되었으며, 람다를 생성하는 루프 주위에 올바르게 코드를
+   * 생성하는 컴파일러 버전에서만 호출됩니다.
+   *
+   * 경고: 이 함수는 오직 컴파일러에 의해 실행되는 것을 전제로 하며, 소스 코드에서 직접 호출해서는
+   * 안 됩니다. 직접 사용할 경우 위험을 감수해야 합니다.
+   *
+   * @param key 그룹의 소스 위치 기반 키. 형제 그룹 사이에서 고유해야 합니다.
    */
   @ComposeCompilerApi
-  override fun startReplaceableGroup(key: Int) = start(key, null, GroupKind.Group, null)
+  override fun startReplaceableGroup(key: Int) {
+    start(
+      key = key,
+      objectKey = null,
+      kind = GroupKind.Group,
+      data = null,
+    )
+  }
 
   /**
    * Indicates the end of a "Replaceable Group" at the current execution position. A Replaceable
@@ -339,94 +389,176 @@ internal class ComposerImpl(
    * directly from source code. Call this API at your own risk.
    *
    * @see [startReplaceableGroup]
-   */
-  @ComposeCompilerApi override fun endReplaceableGroup() = endGroup()
-
-  /** See [Composer.startReplaceGroup] */
-  @ComposeCompilerApi
-  override fun startReplaceGroup(key: Int) {
-    val pending = pending
-    if (pending != null) {
-      start(key, null, GroupKind.Group, null)
-      return
-    }
-    validateNodeNotExpected()
-
-    updateCompositeKeyWhenWeEnterGroup(key, rGroupIndex, null, null)
-
-    rGroupIndex++
-
-    val reader = reader
-    if (inserting) {
-      reader.beginEmpty()
-      writer.startGroup(key, Composer.Empty)
-      enterGroup(false, null)
-      return
-    }
-    val slotKey = reader.groupKey
-    if (slotKey == key && !reader.hasObjectKey) {
-      reader.startGroup()
-      enterGroup(false, null)
-      return
-    }
-
-    if (!reader.isGroupEnd) {
-      // Delete the group that was not expected
-      val removeIndex = nodeIndex
-      val startSlot = reader.currentGroup
-      recordDelete()
-      val nodesToRemove = reader.skipGroup()
-      changeListWriter.removeNode(removeIndex, nodesToRemove)
-
-      invalidations.removeRange(startSlot, reader.currentGroup)
-    }
-
-    // Insert the new group
-    reader.beginEmpty()
-    inserting = true
-    providerCache = null
-    ensureWriter()
-    val writer = writer
-    writer.beginInsert()
-    val startIndex = writer.currentGroup
-    writer.startGroup(key, Composer.Empty)
-    insertAnchor = writer.anchor(startIndex)
-    enterGroup(false, null)
-  }
-
-  /** See [Composer.endReplaceGroup] */
-  @ComposeCompilerApi override fun endReplaceGroup() = endGroup()
-
-  /**
-   * Warning: This is expected to be executed by the compiler only and should not be called
-   * directly from source code. Call this API at your own risk.
-   */
-  @ComposeCompilerApi
-  @Suppress("unused")
-  override fun startDefaults() = start(defaultsKey, null, GroupKind.Group, null)
-
-  /**
-   * Warning: This is expected to be executed by the compiler only and should not be called
-   * directly from source code. Call this API at your own risk.
+   *
+   *
+   * 현재 실행 위치에서 “Replaceable Group”의 끝을 나타냅니다. Replaceable Group은 형제 그룹 사이에서
+   * 이동할 수는 없지만 제거하거나 삽입할 수 있는 그룹입니다. 이러한 그룹은 컴파일러가 if 표현식,
+   * when 표현식, 조기 반환, null 병합 연산자 같은 Composable 함수의 조건 분기 주위에 삽입합니다.
+   *
+   * 경고: 이 함수는 오직 컴파일러에 의해 실행되는 것을 전제로 하며, 소스 코드에서 직접 호출해서는
+   * 안 됩니다. 직접 사용할 경우 위험을 감수해야 합니다.
    *
    * @see [startReplaceableGroup]
    */
   @ComposeCompilerApi
-  @Suppress("unused")
+  override fun endReplaceableGroup() {
+    endGroup()
+  }
+
+  /**
+   * Start a replace group. A replace group is a group that cannot be moved during must only
+   * either be inserted, removed, or replaced. For example, the group created by most control flow
+   * constructs such as an `if` statement are replaceable groups.
+   *
+   * Note: This method replaces [startReplaceableGroup] which is only generated by older versions
+   * of the compose compiler plugin that predate the addition of this method. The runtime is now
+   * required to replace the group if a different group is detected instead of treating it like a
+   * movable group.
+   *
+   * @param key A compiler generated key based on the source location of the call.
+   *
+   *
+   * replace 그룹을 시작합니다. replace 그룹은 이동할 수 없으며 삽입, 제거, 교체만 가능합니다. 예를
+   * 들어, if 문과 같은 대부분의 제어 흐름 구조가 생성하는 그룹은 replaceable 그룹입니다.
+   *
+   * 참고: 이 메서드는 [startReplaceableGroup]을 대체합니다. [startReplaceableGroup]은 이 메서드가
+   * 추가되기 이전의 구버전 Compose 컴파일러 플러그인에서만 생성됩니다. 이제 런타임은 다른 그룹이
+   * 감지되면 그것을 movable group처럼 취급하지 않고 반드시 교체해야 합니다.
+   *
+   * @param key 호출 소스 위치를 기반으로 컴파일러가 생성한 키입니다.
+   */
+  @ComposeCompilerApi
+  override fun startReplaceGroup(key: Int) {
+    val pending = pending
+    if (pending != null) {
+      return start(
+        key = key,
+        objectKey = null,
+        kind = GroupKind.Group,
+        data = null,
+      )
+    }
+
+    validateNodeNotExpected()
+
+    updateCompositeKeyWhenWeEnterGroup(
+      groupKey = key,
+      rGroupIndex = rGroupIndex,
+      dataKey = null,
+      data = null,
+    )
+
+    rGroupIndex++
+
+    val reader = reader
+
+    if (inserting) {
+      reader.beginEmpty()
+      writer.startGroup(key = key, dataKey = Composer.Empty)
+      enterGroup(isNode = false, newPending = null)
+      return
+    }
+
+    val slotKey = reader.groupKey
+
+    if (slotKey == key && !reader.hasObjectKey) {
+      reader.startGroup()
+      enterGroup(isNode = false, newPending = null)
+      return
+    }
+
+    if (!reader.isGroupEnd) {
+      // Delete the group that was not expected.
+      // 예상되지 않은 그룹을 삭제합니다.
+      val removeIndex = nodeIndex
+      val startSlot = reader.currentGroup
+
+      recordDelete()
+
+      val nodesToRemove = reader.skipGroup()
+
+      changeListWriter.removeNode(nodeIndex = removeIndex, count = nodesToRemove)
+      invalidations.removeRange(start = startSlot, end = reader.currentGroup)
+    }
+
+    // Insert the new group.
+    // 새 그룹을 삽입합니다.
+    reader.beginEmpty()
+
+    inserting = true
+    providerCache = null
+
+    ensureWriter()
+
+    val writer = writer
+    writer.beginInsert()
+
+    val startIndex = writer.currentGroup
+    writer.startGroup(key = key, dataKey = Composer.Empty)
+
+    insertAnchor = writer.anchor(index = startIndex)
+
+    enterGroup(isNode = false, newPending = null)
+  }
+
+  /**
+   * Called at the end of a replace group.
+   *
+   * replace 그룹의 끝에서 호출됩니다.
+   */
+  @ComposeCompilerApi override fun endReplaceGroup() {
+    endGroup()
+  }
+
+  /**
+   * Called to start the group that calculates the default parameters of a [Composable] function.
+   *
+   * This method is called near the beginning of a [Composable] function with default parameters
+   * and surrounds the remembered values or [Composable] calls necessary to produce the default
+   * parameters. For example, for `model: Model = remember { DefaultModel() }` the call to
+   * [remember] is called inside a [startDefaults] group.
+   *
+   *
+   * [Composable] 함수의 기본 매개변수를 계산하는 그룹을 시작할 때 호출됩니다.
+   *
+   * 이 메서드는 기본 매개변수가 있는 [Composable] 함수의 시작 부분 근처에서 호출되며, 기본
+   * 매개변수를 생성하는 데 필요한 remember된 값이나 [Composable] 호출을 감쌉니다. 예를 들어
+   * `model: Model = remember { DefaultModel() }`의 경우, [remember] 호출은 [startDefaults] 그룹
+   * 내부에서 호출됩니다.
+   */
+  @ComposeCompilerApi
+  override fun startDefaults() {
+    start(
+      key = defaultsKey,
+      objectKey = null,
+      kind = GroupKind.Group,
+      data = null,
+    )
+  }
+
+  /**
+   * Called at the end of defaults group.
+   *
+   * defaults 그룹의 끝에서 호출됩니다.
+   *
+   * @see [startReplaceableGroup]
+   */
+  @ComposeCompilerApi
   override fun endDefaults() {
     endGroup()
+
     val scope = currentRecomposeScope
     if (scope != null && scope.used) {
       scope.defaultsInScope = true
     }
   }
 
-  @ComposeCompilerApi
   @Suppress("unused")
   override val defaultsInvalid: Boolean
-    get() {
-      return !skipping || providersInvalid || currentRecomposeScope?.defaultsInvalid == true
-    }
+    get() =
+      !skipping ||
+        providersInvalid ||
+        currentRecomposeScope?.defaultsInvalid == true
 
   /**
    * Inserts a "Movable Group" starting marker in the slot table at the current execution
@@ -452,10 +584,32 @@ internal class ComposerImpl(
    * @see [joinKey]
    * @see [startReplaceableGroup]
    * @see [startRestartGroup]
+   *
+   *
+   * 슬롯 테이블의 현재 실행 위치에 “Movable Group” 시작 마커를 삽입합니다. Movable Group은 형제
+   * 그룹 사이에서 이동하거나 순서를 바꾸더라도 슬롯 테이블 상태를 유지할 수 있으며, 제거하거나
+   * 삽입할 수도 있는 그룹입니다. 다만 Movable Group은 다른 그룹보다 비용이 더 큰데, 슬롯 테이블에서
+   * 키가 일치하지 않는 경우 나중에 부모 그룹 실행이 끝날 때까지 해당 그룹이 이동했는지를 확인하기
+   * 위해 임시로 유지해야 하기 때문입니다. Movable Group은 컴파일러가 [key] 호출의 결과로만 삽입합니다.
+   *
+   * [startMovableGroup] 호출은 반드시 대응하는 [endMovableGroup] 호출로 닫혀야 합니다.
+   *
+   * 경고: 이 함수는 오직 컴파일러에 의해 실행되는 것을 전제로 하며, 소스 코드에서 직접 호출해서는
+   * 안 됩니다. 직접 사용할 경우 위험을 감수해야 합니다.
+   *
+   * @param key 그룹의 소스 위치 기반 키. 형제 그룹 사이에서 고유해야 합니다.
+   * @param dataKey [key]와 합쳐서 식별을 강화하는 추가 정보. 값이 여러 개일 경우 [joinKey]로 합쳐야
+   *  합니다. 전달된 값은 의미 있는 [equals]와 [hashCode] 구현을 가져야 합니다.
    */
   @ComposeCompilerApi
-  override fun startMovableGroup(key: Int, dataKey: Any?) =
-    start(key, dataKey, GroupKind.Group, null)
+  override fun startMovableGroup(key: Int, dataKey: Any?) {
+    start(
+      key = key,
+      objectKey = dataKey,
+      kind = GroupKind.Group,
+      data = null,
+    )
+  }
 
   /**
    * Indicates the end of a "Movable Group" at the current execution position. A Movable Group is
@@ -471,32 +625,56 @@ internal class ComposerImpl(
    * directly from source code. Call this API at your own risk.
    *
    * @see [startMovableGroup]
+   *
+   *
+   * 현재 실행 위치에서 “Movable Group”의 끝을 나타냅니다. Movable Group은 형제 그룹 사이에서
+   * 이동하거나 순서를 바꾸더라도 슬롯 테이블 상태를 유지할 수 있으며, 제거하거나 삽입할 수도
+   * 있는 그룹입니다. 이러한 그룹은 Container Group의 직접 자식으로 삽입될 때만 유효합니다.
+   * Movable Group은 다른 그룹보다 비용이 더 큰데, 슬롯 테이블에서 키가 일치하지 않는 경우
+   * 나중에 부모 그룹 실행이 끝날 때까지 해당 그룹이 이동했는지를 확인하기 위해 임시로 유지해야
+   * 하기 때문입니다. Movable Group은 컴파일러가 [key] 호출의 결과로만 삽입합니다.
+   *
+   * 경고: 이 함수는 오직 컴파일러에 의해 실행되는 것을 전제로 하며, 소스 코드에서 직접 호출해서는
+   * 안 됩니다. 직접 사용할 경우 위험을 감수해야 합니다.
+   *
+   * @see [startMovableGroup]
    */
-  @ComposeCompilerApi override fun endMovableGroup() = endGroup()
+  @ComposeCompilerApi
+  override fun endMovableGroup() {
+    endGroup()
+  }
 
   /**
    * Start the composition. This should be called, and only be called, as the first group in the
    * composition.
+   *
+   * 구성을 시작합니다. 이는 반드시, 그리고 오직 구성의 첫 번째 그룹에서만 호출되어야 합니다.
    */
   @OptIn(InternalComposeApi::class)
   private fun startRoot() {
     rGroupIndex = 0
     reader = slotTable.openReader()
-    startGroup(rootKey)
+
+    startGroup(key = rootKey)
 
     // parent reference management
+    // 부모 참조 관리
     parentContext.startComposing()
+
     val parentProvider = parentContext.getCompositionLocalScope()
+
     providersInvalidStack.push(providersInvalid.asInt())
-    providersInvalid = changed(parentProvider)
+    providersInvalid = changed(value = parentProvider)
     providerCache = null
 
-    // Inform observer if one is defined
+    // Inform observer if one is defined.
+    // 옵저버가 정의되어 있다면 알립니다.
     if (!forceRecomposeScopes) {
       forceRecomposeScopes = parentContext.collectingParameterInformation
     }
 
-    // Propagate collecting source information
+    // Propagate collecting source information.
+    // 소스 정보 수집을 전파합니다.
     if (!sourceMarkersEnabled) {
       sourceMarkersEnabled = parentContext.collectingSourceInformation
     }
@@ -505,24 +683,26 @@ internal class ComposerImpl(
       if (sourceMarkersEnabled) {
         @Suppress("UNCHECKED_CAST") // ProvidableCompositionLocal to CompositionLocal
         parentProvider.putValue(
-          LocalCompositionErrorContext as CompositionLocal<Any?>,
-          StaticValueHolder(errorContext),
+          key = LocalCompositionErrorContext as CompositionLocal<Any?>,
+          value = StaticValueHolder(value = errorContext),
         )
       } else {
         parentProvider
       }
 
-    rootProvider.read(LocalInspectionTables)?.let {
-      it.add(compositionData)
-      parentContext.recordInspectionTable(it)
+    rootProvider.read(key = LocalInspectionTables)?.let { compositionDataSet ->
+      compositionDataSet.add(compositionData)
+      parentContext.recordInspectionTable(table = compositionDataSet)
     }
 
-    startGroup(parentContext.compositeKeyHashCode.hashCode())
+    startGroup(key = parentContext.compositeKeyHashCode.hashCode())
   }
 
   /**
    * End the composition. This should be called, and only be called, to end the first group in the
    * composition.
+   *
+   * 구성을 종료합니다. 이는 반드시, 그리고 오직 구성의 첫 번째 그룹을 종료할 때만 호출되어야 합니다.
    */
   @OptIn(InternalComposeApi::class)
   private fun endRoot() {
@@ -532,11 +712,16 @@ internal class ComposerImpl(
     changeListWriter.endRoot()
     finalizeCompose()
     reader.close()
+
     forciblyRecompose = false
     providersInvalid = providersInvalidStack.pop().asBool()
   }
 
-  /** Discard a pending composition because an error was encountered during composition */
+  /**
+   * Discard a pending composition because an error was encountered during composition.
+   *
+   * 컴포지션 중 오류가 발생했을 때 대기 중인 컴포지션을 폐기합니다.
+   */
   @OptIn(InternalComposeApi::class)
   private fun abortRoot() {
     cleanUpCompose()
@@ -554,12 +739,17 @@ internal class ComposerImpl(
     isComposing = false
     forciblyRecompose = false
     reusingGroup = -1
+
     if (!reader.closed) {
       reader.close()
     }
+
     if (!writer.closed) {
       // We cannot just close the insert table as the state of the table is uncertain
       // here and writer.close() might throw.
+      //
+      // insert 테이블의 상태가 불확실하므로 단순히 닫을 수는 없습니다. 이 시점에서
+      // writer.close()를 호출하면 예외가 발생할 수 있습니다.
       forceFreshInsertTable()
     }
   }
@@ -572,6 +762,10 @@ internal class ComposerImpl(
    * True if the composition is currently scheduling nodes to be inserted into the tree. During
    * first composition this is always true. During recomposition this is true when new nodes are
    * being scheduled to be added to the tree.
+   *
+   * 현재 컴포지션이 노드를 트리에 삽입하도록 스케줄링 중이면 true를 반환합니다. 최초 컴포지션
+   * 시에는 항상 true이며, 리컴포지션 시에는 새로운 노드가 트리에 추가되도록 스케줄링될 때 true가
+   * 됩니다.
    */
   @ComposeCompilerApi
   override var inserting: Boolean = false
@@ -591,6 +785,8 @@ internal class ComposerImpl(
   /**
    * Returns the hash of the composite key calculated as a combination of the keys of all the
    * currently started groups via [startGroup].
+   *
+   * 현재 시작된 모든 그룹의 키를 [startGroup]을 통해 결합하여 계산한 복합 키의 해시를 반환합니다.
    */
   @InternalComposeApi
   override var compositeKeyHashCode: CompositeKeyHashCode = EmptyCompositeKeyHashCode
@@ -649,13 +845,42 @@ internal class ComposerImpl(
    * added at the current position.
    *
    * @param key The key for the group
+   *
+   *
+   * 주어진 키로 그룹을 시작합니다. 리컴포지션 중 현재 예상되는 그룹이 주어진 키와 일치하지 않으면,
+   * 동일한 부모 그룹에서 생성된 그룹들을 검사하여 해당 키를 가진 그룹이 있는지 확인합니다. 첫 번째로
+   * 발견된 그룹은 그 그룹이 생성한 노드들과 함께 현재 위치로 이동되며, 이후 구성이 계속 진행됩니다.
+   * 만약 해당 키를 가진 그룹이 발견되지 않으면, 구성이 삽입 모드(insert mode)로 전환되어 현재 위치에
+   * 새 노드들이 추가됩니다.
+   *
+   * @param key 그룹의 키
    */
-  private fun startGroup(key: Int) = start(key, null, GroupKind.Group, null)
+  private fun startGroup(key: Int) {
+    start(
+      key = key,
+      objectKey = null,
+      kind = GroupKind.Group,
+      data = null,
+    )
+  }
 
-  private fun startGroup(key: Int, dataKey: Any?) = start(key, dataKey, GroupKind.Group, null)
+  private fun startGroup(key: Int, dataKey: Any?) {
+    start(
+      key = key,
+      objectKey = dataKey,
+      kind = GroupKind.Group,
+      data = null,
+    )
+  }
 
-  /** End the current group. */
-  private fun endGroup() = end(isNode = false)
+  /**
+   * End the current group.
+   *
+   * 현재 그룹을 종료합니다.
+   */
+  private fun endGroup() {
+    end(isNode = false)
+  }
 
   @OptIn(InternalComposeApi::class)
   private fun skipGroup() {
@@ -668,9 +893,20 @@ internal class ComposerImpl(
    * node with that key is scanned for and moved into the current position if found, if no such
    * node is found the composition switches into insert mode and a the node is scheduled to be
    * inserted at the current location.
+   *
+   * 노드 생성을 시작합니다. [startNode] 이후 반드시 [createNode]가 호출되어야 합니다. [startGroup]과
+   * 유사하게, 리컴포지션 중 현재 노드가 제공된 키를 가지고 있지 않다면 해당 키를 가진 노드를 탐색하여
+   * 발견 시 현재 위치로 이동시킵니다. 만약 그런 노드가 없다면, 구성이 삽입 모드(insert mode)로 전환되어
+   * 현재 위치에 새 노드가 삽입되도록 예약됩니다.
    */
   override fun startNode() {
-    start(nodeKey, null, GroupKind.Node, null)
+    start(
+      key = nodeKey,
+      objectKey = null,
+      kind = GroupKind.Node,
+      data = null,
+    )
+
     nodeExpected = true
   }
 
@@ -797,13 +1033,25 @@ internal class ComposerImpl(
   /**
    * Create a composed key that can be used in calls to [startGroup] or [startNode]. This will use
    * the key stored at the current location in the slot table to avoid allocating a new key.
+   *
+   * [startGroup]이나 [startNode] 호출에 사용할 수 있는 합성 키를 생성합니다. 이는 슬롯 테이블의
+   * 현재 위치에 저장된 키를 활용하여 새 키를 할당하지 않도록 합니다.
    */
   @ComposeCompilerApi
   @OptIn(InternalComposeApi::class)
   override fun joinKey(left: Any?, right: Any?): Any =
-    getKey(reader.groupObjectKey, left, right) ?: JoinedKey(left, right)
+    getKey(
+      value = reader.groupObjectKey,
+      left = left,
+      right = right
+    )
+      ?: JoinedKey(left = left, right = right)
 
-  /** Return the next value in the slot table and advance the current location. */
+  /**
+   * Return the next value in the slot table and advance the current location.
+   *
+   * 슬롯 테이블에서 다음 값을 반환하고 현재 위치를 앞으로 이동합니다.
+   */
   @PublishedApi
   @OptIn(InternalComposeApi::class)
   internal fun nextSlot(): Any? =
@@ -811,8 +1059,8 @@ internal class ComposerImpl(
       validateNodeNotExpected()
       Composer.Empty
     } else
-      reader.next().let {
-        if (reusing && it !is ReusableRememberObserverHolder) Composer.Empty else it
+      reader.next().let { data ->
+        if (reusing && data !is ReusableRememberObserverHolder) Composer.Empty else data
       }
 
   @PublishedApi
@@ -837,14 +1085,13 @@ internal class ComposerImpl(
    * @param value the value to be compared.
    */
   @ComposeCompilerApi
-  override fun changed(value: Any?): Boolean {
-    return if (nextSlot() != value) {
+  override fun changed(value: Any?): Boolean =
+    if (nextSlot() != value) {
       updateValue(value)
       true
     } else {
       false
     }
-  }
 
   @ComposeCompilerApi
   override fun changedInstance(value: Any?): Boolean {
@@ -977,28 +1224,40 @@ internal class ComposerImpl(
   @OptIn(InternalComposeApi::class)
   internal fun updateValue(value: Any?) {
     if (inserting) {
-      writer.update(value)
+      writer.update(value = value)
     } else {
       if (reader.hadNext) {
         // We need to update the slot we just read so which is is one previous to the
         // current group slot index.
+        //
+        // 방금 읽은 슬롯을 업데이트해야 하므로 현재 그룹의 슬롯 인덱스보다 하나 이전
+        // 위치를 갱신합니다.
         val groupSlotIndex = reader.groupSlotIndex - 1
         if (changeListWriter.pastParent) {
           // The reader is after the first child of the group so we cannot reposition the
           // writer to the parent to update it as this will cause the writer to navigate
-          // backward which violates the single pass, forward walking  nature of update.
+          // backward which violates the single pass, forward walking nature of update.
           // Using an anchored updated allows to to violate this principle just for
           // updating slots as this is required if the update occurs after the writer has
           // been moved past the parent.
+          //
+          // reader가 그룹의 첫 번째 자식 이후에 있으므로 writer를 부모로 되돌려 업데이트할 수
+          // 없습니다. 그렇게 하면 writer가 뒤로 이동하여 업데이트의 [단일 패스 전방 진행 원칙]을
+          // 위반합니다. 앵커 기반 업데이트를 사용하면 슬롯만 업데이트하는 경우에 한해 이 원칙을
+          // 예외적으로 허용합니다. writer가 부모를 지나 이동한 뒤에 업데이트가 발생하는 상황에서는
+          // 이 방식이 필요합니다.
           changeListWriter.updateAnchoredValue(
-            value,
-            reader.anchor(reader.parent),
-            groupSlotIndex,
+            value = value,
+            anchor = reader.anchor(index = reader.parent),
+            groupSlotIndex = groupSlotIndex,
           )
         } else {
           // No children have been seen yet so we are still in a position where we can
           // directly update the parent.
-          changeListWriter.updateValue(value, groupSlotIndex)
+          //
+          // 아직 자식이 발견되지 않았으므로 부모를 직접 업데이트할 수 있는 위치에
+          // 있습니다.
+          changeListWriter.updateValue(value = value, groupSlotIndex = groupSlotIndex)
         }
       } else {
         // This uses an anchor for the same reason as `updateAnchoredValue` uses and anchor,
@@ -1006,7 +1265,15 @@ internal class ComposerImpl(
         // the parent. As this is likely to never occur in an empty group, we don't bother
         // checking if the reader has moved so we don't need an anchored and un-anchored
         // version of the same function.
-        changeListWriter.appendValue(reader.anchor(reader.parent), value)
+        //
+        // 이 경우 updateAnchoredValue가 앵커를 사용하는 것과 같은 이유로 앵커를 사용합니다.
+        // writer가 부모를 지나 앞으로 진행했을 수 있으며, 우리는 부모를 다시 업데이트해야 합니다.
+        // 빈 그룹에서는 이런 상황이 발생하지 않을 가능성이 크기 때문에 reader가 이동했는지 여부를
+        // 확인하지 않으며, 따라서 동일한 함수의 앵커 버전과 비앵커 버전을 따로 둘 필요가 없습니다.
+        changeListWriter.appendValue(
+          anchor = reader.anchor(index = reader.parent),
+          value = value,
+        )
       }
     }
   }
@@ -1295,15 +1562,18 @@ internal class ComposerImpl(
 
   internal val currentRecomposeScope: RecomposeScopeImpl?
     get() =
-      invalidateStack.let {
-        if (childrenComposing == 0 && it.isNotEmpty()) it.peek() else null
+      invalidateStack.let { stack ->
+        if (childrenComposing == 0 && stack.isNotEmpty()) stack.peek() else null
       }
 
   private fun ensureWriter() {
     if (writer.closed) {
       writer = insertTable.openWriter()
-      // Append to the end of the table
+
+      // Append to the end of the table.
+      // 테이블 끝에 추가합니다.
       writer.skipToGroupEnd()
+
       writerHasAProvider = false
       providerCache = null
     }
@@ -1320,137 +1590,236 @@ internal class ComposerImpl(
         if (sourceMarkersEnabled) collectSourceInformation()
         if (parentContext.collectingCallByInformation) collectCalledByInformation()
       }
-    writer = insertTable.openWriter().also { it.close(true) }
+
+    writer = insertTable.openWriter().also { it.close(normalClose = true) }
   }
 
-  /** Start the reader group updating the data of the group if necessary */
+  /**
+   * Start the reader group updating the data of the group if necessary.
+   *
+   * 필요하다면 그룹의 데이터를 갱신하면서 리더 그룹을 시작합니다.
+   */
   private fun startReaderGroup(isNode: Boolean, data: Any?) {
     if (isNode) {
       reader.startNode()
     } else {
       if (data != null && reader.groupAux !== data) {
-        changeListWriter.updateAuxData(data)
+        changeListWriter.updateAuxData(data = data)
       }
       reader.startGroup()
     }
   }
 
-  private fun start(key: Int, objectKey: Any?, kind: GroupKind, data: Any?) {
+  private fun start(
+    key: Int,
+    objectKey: Any?,
+    kind: GroupKind,
+    data: Any?,
+  ) {
     validateNodeNotExpected()
 
-    updateCompositeKeyWhenWeEnterGroup(key, rGroupIndex, objectKey, data)
+    updateCompositeKeyWhenWeEnterGroup(
+      groupKey = key,
+      rGroupIndex = rGroupIndex,
+      dataKey = objectKey,
+      data = data,
+    )
 
     if (objectKey == null) rGroupIndex++
 
     // Check for the insert fast path. If we are already inserting (creating nodes) then
     // there is no need to track insert, deletes and moves with a pending changes object.
+    //
+    // 삽입 빠른 경로(insert fast path)를 확인합니다. 이미 삽입(노드 생성) 중이라면,
+    // 보류 중인 Change 객체로 삽입, 삭제, 이동을 추적할 필요가 없습니다.
     val isNode = kind.isNode
+
     if (inserting) {
       reader.beginEmpty()
+
       val startIndex = writer.currentGroup
+
       when {
-        isNode -> writer.startNode(key, Composer.Empty)
-        data != null -> writer.startData(key, objectKey ?: Composer.Empty, data)
-        else -> writer.startGroup(key, objectKey ?: Composer.Empty)
+        isNode -> {
+          writer.startNode(
+            key = key,
+            objectKey = Composer.Empty
+          )
+        }
+        data != null -> {
+          writer.startData(
+            key = key,
+            objectKey = objectKey ?: Composer.Empty,
+            aux = data,
+          )
+        }
+        else -> {
+          writer.startGroup(
+            key = key,
+            dataKey = objectKey ?: Composer.Empty,
+          )
+        }
       }
+
       pending?.let { pending ->
         val insertKeyInfo =
           KeyInfo(
             key = key,
             objectKey = -1,
-            location = insertedGroupVirtualIndex(startIndex),
+            location = insertedGroupVirtualIndex(index = startIndex),
             nodes = -1,
             index = 0,
           )
-        pending.registerInsert(insertKeyInfo, nodeIndex - pending.startIndex)
-        pending.recordUsed(insertKeyInfo)
+
+        pending.registerInsert(keyInfo = insertKeyInfo, insertIndex = nodeIndex - pending.startIndex)
+        pending.recordUsed(keyInfo = insertKeyInfo)
       }
-      enterGroup(isNode, null)
+
+      enterGroup(isNode = isNode, newPending = null)
       return
     }
 
+    // 여기서부터는 inserting == false 일 때만 실행됨
+
     val forceReplace = !kind.isReusable && reusing
+
     if (pending == null) {
-      val slotKey = reader.groupKey
+      val slotKey: Int = reader.groupKey
+
       if (!forceReplace && slotKey == key && objectKey == reader.groupObjectKey) {
         // The group is the same as what was generated last time.
-        startReaderGroup(isNode, data)
+        // 그룹이 지난번에 생성된 것과 동일합니다.
+        startReaderGroup(isNode = isNode, data = data)
       } else {
-        pending = Pending(reader.extractKeys(), nodeIndex)
+        pending = Pending(keyInfos = reader.extractKeys(), startIndex = nodeIndex)
       }
     }
 
     val pending = pending
     var newPending: Pending? = null
+
     if (pending != null) {
       // Check to see if the key was generated last time from the keys collected above.
-      val keyInfo = pending.getNext(key, objectKey)
+      // 위에서 수집한 키들로부터 해당 키가 지난번에 생성된 것인지 확인합니다.
+      val keyInfo = pending.getNext(key = key, dataKey = objectKey)
+
       if (!forceReplace && keyInfo != null) {
         // This group was generated last time, use it.
-        pending.recordUsed(keyInfo)
+        // 이 그룹은 지난번에 생성된 것이므로, 그대로 사용합니다.
+        pending.recordUsed(keyInfo = keyInfo)
 
         // Move the slot table to the location where the information about this group is
         // stored. The slot information will move once the changes are applied so moving the
         // current of the slot table is sufficient.
+        //
+        // 슬롯 테이블을 이 그룹의 정보가 저장된 위치로 이동합니다. 변경 사항이 적용되면
+        // 슬롯 정보는 이동하므로, 슬롯 테이블의 현재 위치를 옮기는 것만으로 충분합니다.
         val location = keyInfo.location
 
         // Determine what index this group is in. This is used for inserting nodes into the
         // group.
-        nodeIndex = pending.nodePositionOf(keyInfo) + pending.startIndex
+        //
+        // 이 그룹이 몇 번째 인덱스에 있는지 확인합니다. 이는 노드를 그룹에 삽입할 때 사용됩니다.
+        nodeIndex = pending.nodePositionOf(keyInfo = keyInfo) + pending.startIndex
 
         // Determine how to move the slot group to the correct position.
-        val relativePosition = pending.slotPositionOf(keyInfo)
+        // 슬롯 그룹을 올바른 위치로 어떻게 이동할지 결정합니다.
+        val relativePosition = pending.slotPositionOf(keyInfo = keyInfo)
         val currentRelativePosition = relativePosition - pending.groupIndex
-        pending.registerMoveSlot(relativePosition, pending.groupIndex)
-        changeListWriter.moveReaderRelativeTo(location)
-        reader.reposition(location)
+
+        pending.registerMoveSlot(from = relativePosition, to = pending.groupIndex)
+        changeListWriter.moveReaderRelativeTo(location = location)
+        reader.reposition(index = location)
+
         if (currentRelativePosition > 0) {
           // The slot group must be moved, record the move to be performed during apply.
-          changeListWriter.moveCurrentGroup(currentRelativePosition)
+          // 슬롯 그룹을 이동해야 하므로, apply시 수행할 이동 작업을 기록합니다.
+          changeListWriter.moveCurrentGroup(offset = currentRelativePosition)
         }
-        startReaderGroup(isNode, data)
-      } else {
+
+        startReaderGroup(isNode = isNode, data = data)
+      }
+
+      // forceReplace == true || keyInfo == null
+      else {
         // The group is new, go into insert mode. All child groups will written to the
         // insertTable until the group is complete which will schedule the groups to be
         // inserted into in the table.
+        //
+        // 그룹이 새로 생성되었으므로 삽입 모드로 전환합니다. 모든 하위 그룹은 그룹이 완료될
+        // 때까지 insertTable에 기록되며, 이후 이 그룹들이 테이블에 삽입되도록 예약됩니다.
         reader.beginEmpty()
+
         inserting = true
         providerCache = null
+
         ensureWriter()
         writer.beginInsert()
+
         val startIndex = writer.currentGroup
         when {
-          isNode -> writer.startNode(key, Composer.Empty)
-          data != null -> writer.startData(key, objectKey ?: Composer.Empty, data)
-          else -> writer.startGroup(key, objectKey ?: Composer.Empty)
+          isNode -> {
+            writer.startNode(
+              key = key,
+              objectKey = Composer.Empty,
+            )
+          }
+          data != null -> {
+            writer.startData(
+              key = key,
+              objectKey = objectKey ?: Composer.Empty,
+              aux = data,
+            )
+          }
+          else -> {
+            writer.startGroup(
+              key = key,
+              dataKey = objectKey ?: Composer.Empty,
+            )
+          }
         }
-        insertAnchor = writer.anchor(startIndex)
+
+        insertAnchor = writer.anchor(index = startIndex)
+
         val insertKeyInfo =
           KeyInfo(
             key = key,
             objectKey = -1,
-            location = insertedGroupVirtualIndex(startIndex),
+            location = insertedGroupVirtualIndex(index = startIndex),
             nodes = -1,
             index = 0,
           )
-        pending.registerInsert(insertKeyInfo, nodeIndex - pending.startIndex)
-        pending.recordUsed(insertKeyInfo)
-        newPending = Pending(mutableListOf(), if (isNode) 0 else nodeIndex)
+
+        pending.registerInsert(
+          keyInfo = insertKeyInfo,
+          insertIndex = nodeIndex - pending.startIndex,
+        )
+        pending.recordUsed(keyInfo = insertKeyInfo)
+
+        newPending = Pending(
+          keyInfos = mutableListOf(),
+          startIndex = if (isNode) 0 else nodeIndex,
+        )
       }
     }
 
-    enterGroup(isNode, newPending)
+    enterGroup(isNode = isNode, newPending = newPending)
   }
 
   private fun enterGroup(isNode: Boolean, newPending: Pending?) {
     // When entering a group all the information about the parent should be saved, to be
     // restored when end() is called, and all the tracking counters set to initial state for the
     // group.
+    //
+    // 그룹에 진입할 때 부모와 관련된 모든 정보를 저장해 두었다가 end()가 호출되면 복원해야 합니다.
+    // 또한 그룹을 위한 모든 추적 카운터들을 초기 상태로 설정해야 합니다.
     pendingStack.push(pending)
+
     this.pending = newPending
     this.parentStateStack.push(groupNodeCount)
     this.parentStateStack.push(rGroupIndex)
     this.parentStateStack.push(nodeIndex)
+
     if (isNode) nodeIndex = 0
     groupNodeCount = 0
     rGroupIndex = 0
@@ -1461,10 +1830,16 @@ internal class ComposerImpl(
     // children. For example, if a group generates nodes then the number of generated nodes will
     // increment the node index and the group's node count. If the parent is tracking structural
     // changes in pending then restore that too.
+    //
+    // 자식의 변경 사항에 따라 달라진 경우 부모의 상태를 갱신하며 복원합니다. 예를 들어, 그룹이
+    // 노드를 생성하면 생성된 노드의 수만큼 노드 인덱스와 그룹의 노드 수가 증가합니다. 또한 부모가
+    // 보류 상태에서 구조적 변화를 추적 중이었다면 그것도 함께 복원합니다.
     val previousPending = pendingStack.pop()
+
     if (previousPending != null && !inserting) {
       previousPending.groupIndex++
     }
+
     this.pending = previousPending
     this.nodeIndex = parentStateStack.pop() + expectedNodeCount
     this.rGroupIndex = parentStateStack.pop()
@@ -1475,38 +1850,53 @@ internal class ComposerImpl(
     // All the changes to the group (or node) have been recorded. All new nodes have been
     // inserted but it has yet to determine which need to be removed or moved. Note that the
     // changes are relative to the first change in the list of nodes that are changing.
+    //
+    // 그룹(또는 노드)의 모든 변경 사항이 기록되었습니다. 새로운 노드들은 모두 삽입되었지만,
+    // 어떤 노드가 제거되거나 이동해야 하는지는 아직 결정되지 않았습니다. 이때 변경 사항은
+    // 변경 중인 노드 목록의 첫 번째 변경을 기준으로 계산됩니다.
 
-    // The rGroupIndex for parent is two pack from the current stack top which has already been
-    // incremented past this group needs to be offset by one.
+    // The rGroupIndex for parent is two pack from the current stack top which has already
+    // been incremented past this group needs to be offset by one.
+    //
+    // 부모의 rGroupIndex는 현재 스택 최상단에서 두 단계 아래에 있으며, 스택은 이미 이 그룹을
+    // 지나 증가된 상태이므로 1만큼 보정해야 합니다.
     val rGroupIndex = parentStateStack.peek2() - 1
+
     if (inserting) {
       val parent = writer.parent
       updateCompositeKeyWhenWeExitGroup(
-        writer.groupKey(parent),
-        rGroupIndex,
-        writer.groupObjectKey(parent),
-        writer.groupAux(parent),
+        groupKey = writer.groupKey(index = parent),
+        rGroupIndex = rGroupIndex,
+        dataKey = writer.groupObjectKey(index = parent),
+        data = writer.groupAux(index = parent),
       )
     } else {
       val parent = reader.parent
       updateCompositeKeyWhenWeExitGroup(
-        reader.groupKey(parent),
-        rGroupIndex,
-        reader.groupObjectKey(parent),
-        reader.groupAux(parent),
+        groupKey = reader.groupKey(index = parent),
+        rGroupIndex = rGroupIndex,
+        dataKey = reader.groupObjectKey(index = parent),
+        data = reader.groupAux(index = parent),
       )
     }
+
     var expectedNodeCount = groupNodeCount
     val pending = pending
-    if (pending != null && pending.keyInfos.size > 0) {
-      // previous contains the list of keys as they were generated in the previous composition
-      val previous = pending.keyInfos
 
-      // current contains the list of keys in the order they need to be in the new composition
-      val current = pending.used
+    if (pending != null && pending.keyInfos.isNotEmpty()) {
+      // previous contains the list of keys as they were generated in the previous composition.
+      // previous는 이전 컴포지션에서 생성된 키들의 목록을 담고 있습니다.
+      val previous: MutableList<KeyInfo> = pending.keyInfos
+
+      // current contains the list of keys in the order they need to be in the new composition.
+      // current는 새로운 컴포지션에서 필요한 순서대로 정렬된 키들의 목록을 담고 있습니다.
+      val current: List<KeyInfo> = pending.used
 
       // usedKeys contains the keys that were used in the new composition, therefore if a key
       // doesn't exist in this set, it needs to be removed.
+      //
+      // usedKeys는 새로운 컴포지션에서 사용된 키들을 담고 있습니다. 따라서 이 집합에 존재하지
+      // 않는 키는 제거해야 합니다.
       val usedKeys = current.fastToSet()
 
       val placedKeys = mutableSetOf<KeyInfo>()
@@ -1515,37 +1905,51 @@ internal class ComposerImpl(
       var previousIndex = 0
       val previousEnd = previous.size
 
-      // Traverse the list of changes to determine startNode movement
+      // Traverse the list of changes to determine startNode movement.
+      // Change 목록을 순회하면서 startNode 이동 여부를 결정합니다.
       var nodeOffset = 0
+
       while (previousIndex < previousEnd) {
         val previousInfo = previous[previousIndex]
-        if (!usedKeys.contains(previousInfo)) {
+        if (previousInfo !in usedKeys) {
           // If the key info was not used the group was deleted, remove the nodes in the
-          // group
-          val deleteOffset = pending.nodePositionOf(previousInfo)
+          // group.
+          //
+          // 키 정보가 사용되지 않았다면 해당 그룹은 삭제된 것이므로, 그룹 안의 노드들을 제거합니다.
+          val deleteOffset = pending.nodePositionOf(keyInfo = previousInfo)
+
           changeListWriter.removeNode(
             nodeIndex = deleteOffset + pending.startIndex,
             count = previousInfo.nodes,
           )
-          pending.updateNodeCount(previousInfo.location, 0)
-          changeListWriter.moveReaderRelativeTo(previousInfo.location)
-          reader.reposition(previousInfo.location)
+          pending.updateNodeCount(
+            group = previousInfo.location,
+            newCount = 0,
+          )
+          changeListWriter.moveReaderRelativeTo(location = previousInfo.location)
+          reader.reposition(index = previousInfo.location)
           recordDelete()
           reader.skipGroup()
 
           // Remove any invalidations pending for the group being removed. These are no
           // longer part of the composition. The group being composed is one after the
           // start of the group.
+          //
+          // 제거되는 그룹의 보류 중인 무효화 항목들을 모두 제거합니다. 이들은 더 이상
+          // 컴포지션의 일부가 아닙니다. 현재 컴포즈 중인 그룹은 해당 그룹의 시작 이후에
+          // 오는 그룹입니다.
           invalidations.removeRange(
-            previousInfo.location,
-            previousInfo.location + reader.groupSize(previousInfo.location),
+            start = previousInfo.location,
+            end = previousInfo.location + reader.groupSize(index = previousInfo.location),
           )
+
           previousIndex++
           continue
         }
 
         if (previousInfo in placedKeys) {
           // If the group was already placed in the correct location, skip it.
+          // 그룹이 이미 올바른 위치에 배치되어 있다면 건너뜁니다.
           previousIndex++
           continue
         }
@@ -1553,36 +1957,55 @@ internal class ComposerImpl(
         if (currentIndex < currentEnd) {
           // At this point current should match previous unless the group is new or was
           // moved.
+          //
+          // 이 시점에서 current는 새 그룹이거나 이동된 그룹이 아닌 이상 previous와
+          // 일치해야 합니다.
           val currentInfo = current[currentIndex]
           if (currentInfo !== previousInfo) {
-            val nodePosition = pending.nodePositionOf(currentInfo)
+            val nodePosition = pending.nodePositionOf(keyInfo = currentInfo)
             placedKeys.add(currentInfo)
+
             if (nodePosition != nodeOffset) {
-              val updatedCount = pending.updatedNodeCountOf(currentInfo)
+              val updatedCount = pending.updatedNodeCountOf(keyInfo = currentInfo)
+
               changeListWriter.moveNode(
                 from = nodePosition + pending.startIndex,
                 to = nodeOffset + pending.startIndex,
                 count = updatedCount,
               )
-              pending.registerMoveNode(nodePosition, nodeOffset, updatedCount)
-            } // else the nodes are already in the correct position
+              pending.registerMoveNode(
+                from = nodePosition,
+                to = nodeOffset,
+                count = updatedCount,
+              )
+            }
+            // else the nodes are already in the correct position.
+            // 그렇지 않으면 노드들은 이미 올바른 위치에 있습니다.
           } else {
-            // The correct nodes are in the right location
+            // The correct nodes are in the right location.
+            // 올바른 노드들이 올바른 위치에 있습니다.
             previousIndex++
           }
+
           currentIndex++
-          nodeOffset += pending.updatedNodeCountOf(currentInfo)
+          nodeOffset += pending.updatedNodeCountOf(keyInfo = currentInfo)
         }
       }
 
       // If there are any current nodes left they where inserted into the right location
       // when the group began so the rest are ignored.
+      //
+      // 남아 있는 현재 노드가 있다면, 그룹이 시작될 때 이미 올바른 위치에 삽입되었으므로
+      // 나머지는 무시합니다.
       changeListWriter.endNodeMovement()
 
       // We have now processed the entire list so move the slot table to the end of the list
       // by moving to the last key and skipping it.
-      if (previous.size > 0) {
-        changeListWriter.moveReaderRelativeTo(reader.groupEnd)
+      //
+      // 이제 전체 목록을 모두 처리했으므로, 마지막 키로 이동한 뒤 이를 건너뛰어 슬롯 테이블을
+      // 목록의 끝으로 이동합니다.
+      if (previous.isNotEmpty()) {
+        changeListWriter.moveReaderRelativeTo(location = reader.groupEnd)
         reader.skipToGroupEnd()
       }
     }
@@ -1595,21 +2018,33 @@ internal class ComposerImpl(
       // before the children are deleted to ensure that the `RememberEventDispatcher` receives
       // the `leaving()` call in the correct order so the `onForgotten` is dispatched in the
       // correct order for the values being removed.
+      //
+      // 슬롯이 사용되지 않았을 때를 감지합니다. 이는 그룹 끝에서 remember가 제거될 때 발생합니다.
+      // 코드 생성 문제(b/346821372) 때문에 자식들이 호출되기 전에 제거된 remember를 감지할 수도
+      // 있으므로, 자식들이 삭제되기 전에 이 과정을 수행해야 RememberEventDispatcher가 올바른 순서로
+      // leaving() 호출을 받아 제거되는 값들에 대해 onForgotten이 올바른 순서로 디스패치됩니다.
       val remainingSlots = reader.remainingSlots
       if (remainingSlots > 0) {
-        changeListWriter.trimValues(remainingSlots)
+        changeListWriter.trimValues(count = remainingSlots)
       }
     }
 
     // Detect removing nodes at the end. No pending is created in this case we just have more
-    // nodes in the previous composition than we expect (i.e. we are not yet at an end)
+    // nodes in the previous composition than we expect. (i.e. we are not yet at an end)
+    //
+    // 끝에서 노드가 제거되는 것을 감지합니다. 이 경우에는 Pending이 생성되지 않고, 단지 이전
+    // 컴포지션에 예상보다 더 많은 노드가 남아 있는 상황(즉, 아직 끝에 도달하지 않은 상태)입니다.
     val removeIndex = nodeIndex
+
     while (!reader.isGroupEnd) {
       val startSlot = reader.currentGroup
+
       recordDelete()
+
       val nodesToRemove = reader.skipGroup()
-      changeListWriter.removeNode(removeIndex, nodesToRemove)
-      invalidations.removeRange(startSlot, reader.currentGroup)
+
+      changeListWriter.removeNode(nodeIndex = removeIndex, count = nodesToRemove)
+      invalidations.removeRange(start = startSlot, end = reader.currentGroup)
     }
 
     if (inserting) {
@@ -1617,28 +2052,43 @@ internal class ComposerImpl(
         insertFixups.endNodeInsert()
         expectedNodeCount = 1
       }
+
       reader.endEmpty()
+
       val parentGroup = writer.parent
+
       writer.endGroup()
+
       if (!reader.inEmpty) {
-        val virtualIndex = insertedGroupVirtualIndex(parentGroup)
+        val virtualIndex = insertedGroupVirtualIndex(index = parentGroup)
+
         writer.endInsert()
-        writer.close(true)
-        recordInsert(insertAnchor)
+        writer.close(normalClose = true)
+
+        recordInsert(anchor = insertAnchor)
+
         this.inserting = false
+
         if (!slotTable.isEmpty) {
-          updateNodeCount(virtualIndex, 0)
-          updateNodeCountOverrides(virtualIndex, expectedNodeCount)
+          updateNodeCount(group = virtualIndex, count = 0)
+          updateNodeCountOverrides(group = virtualIndex, newCount = expectedNodeCount)
         }
       }
-    } else {
+    }
+
+    // inserting == false
+    else {
       if (isNode) changeListWriter.moveUp()
+
       changeListWriter.endCurrentGroup()
+
       val parentGroup = reader.parent
-      val parentNodeCount = updatedNodeCount(parentGroup)
+      val parentNodeCount = updatedNodeCount(group = parentGroup)
+
       if (expectedNodeCount != parentNodeCount) {
-        updateNodeCountOverrides(parentGroup, expectedNodeCount)
+        updateNodeCountOverrides(group = parentGroup, newCount = expectedNodeCount)
       }
+
       if (isNode) {
         expectedNodeCount = 1
       }
@@ -1647,7 +2097,7 @@ internal class ComposerImpl(
       changeListWriter.endNodeMovement()
     }
 
-    exitGroup(expectedNodeCount, inserting)
+    exitGroup(expectedNodeCount = expectedNodeCount, inserting = inserting)
   }
 
   /**
@@ -1664,102 +2114,166 @@ internal class ComposerImpl(
   private fun recomposeToGroupEnd() {
     val wasComposing = isComposing
     isComposing = true
+
     var recomposed = false
 
     val parent = reader.parent
-    val end = parent + reader.groupSize(parent)
+    val end = parent + reader.groupSize(index = parent)
     val recomposeIndex = nodeIndex
     val recomposeCompositeKey = this@ComposerImpl.compositeKeyHashCode
     val oldGroupNodeCount = groupNodeCount
     val oldRGroupIndex = rGroupIndex
     var oldGroup = parent
 
-    var firstInRange = invalidations.firstInRange(reader.currentGroup, end)
+    var firstInRange = invalidations.firstInRange(start = reader.currentGroup, end = end)
+
     while (firstInRange != null) {
       val location = firstInRange.location
       val scope = firstInRange.scope
 
-      invalidations.removeLocation(location)
+      invalidations.removeLocation(location = location)
 
       if (firstInRange.isInvalid()) {
         recomposed = true
 
-        reader.reposition(location)
+        reader.reposition(index = location)
+
         val newGroup = reader.currentGroup
-        // Record the changes to the applier location
-        recordUpsAndDowns(oldGroup, newGroup, parent)
+
+        // Record the changes to the applier location.
+        // applier 위치의 변경 사항을 기록합니다.
+        recordUpsAndDowns(
+          oldGroup = oldGroup,
+          newGroup = newGroup,
+          commonRoot = parent,
+        )
         oldGroup = newGroup
 
         // Calculate the node index (the distance index in the node this groups nodes are
         // located in the parent node).
-        nodeIndex = nodeIndexOf(location, newGroup, parent, recomposeIndex)
+        //
+        // 노드 인덱스를 계산합니다. 이 값은 이 그룹의 노드들이 부모 노드에서 위치한
+        // 노드까지의 거리 인덱스입니다.
+        nodeIndex = nodeIndexOf(
+          groupLocation = location,
+          group = newGroup,
+          recomposeGroup = parent,
+          recomposeIndex = recomposeIndex,
+        )
 
         // Calculate the current rGroupIndex for this node, storing any parent rGroup
-        // indexes we needed into the rGroup IntList
-        rGroupIndex = rGroupIndexOf(newGroup)
+        // indexes we needed into the rGroup IntList.
+        //
+        // 이 노드의 현재 rGroupIndex를 계산하고, 필요한 부모 rGroup 인덱스들을
+        // rGroup IntList에 저장합니다.
+        rGroupIndex = rGroupIndexOf(group = newGroup)
 
         // Calculate the composite hash code (a semi-unique code for every group in the
         // composition used to restore saved state).
-        val newParent = reader.parent(newGroup)
-        this@ComposerImpl.compositeKeyHashCode =
-          compositeKeyOf(newParent, parent, recomposeCompositeKey)
+        //
+        // 합성 해시 코드를 계산합니다. (저장된 상태를 복원하는 데 사용되는, 컴포지션 내
+        // 각 그룹을 구분하기 위한 반고유 코드)
+        val newParent = reader.parent(index = newGroup)
 
-        // We have moved so the cached lookup of the provider is invalid
+        this@ComposerImpl.compositeKeyHashCode =
+          compositeKeyOf(
+            group = newParent,
+            recomposeGroup = parent,
+            recomposeKey = recomposeCompositeKey,
+          )
+
+        // We have moved so the cached lookup of the provider is invalid.
+        // 이동했으므로 캐시된 provider 조회는 더 이상 유효하지 않습니다.
         providerCache = null
 
         // Invoke the function with the same parameters as the last composition (which
         // were captured in the lambda set into the scope).
-        scope.compose(this)
+        //
+        // 마지막 컴포지션에서와 동일한 매개변수로 함수를 호출합니다. 이 매개변수들은
+        // 스코프에 설정된 람다에 캡처되어 있습니다.
+        scope.compose(composer = this)
 
         // We could have moved out of a provider so the provider cache is invalid.
+        // provider 밖으로 이동했을 수 있으므로 provider 캐시는 유효하지 않습니다.
         providerCache = null
 
-        // Restore the parent of the reader to the previous parent
-        reader.restoreParent(parent)
-      } else {
+        // Restore the parent of the reader to the previous parent.
+        // 리더의 부모를 이전 부모로 복원합니다.
+        reader.restoreParent(index = parent)
+      }
+
+      // firstInRange.isInvalid() == false
+      else {
         // If the invalidation is not used restore the reads that were removed when the
         // the invalidation was recorded. This happens, for example, when on of a derived
         // state's dependencies changed but the derived state itself was not changed.
+        //
+        // 무효화가 사용되지 않았다면, 무효화가 기록될 때 제거된 읽기들을 복원합니다.
+        // 예를 들어, 파생 상태의 의존성이 변경되었지만 파생 상태 자체는 변경되지 않은 경우
+        // 이런 일이 발생합니다.
         invalidateStack.push(scope)
+
         val observer = observerHolder.current()
         if (observer != null) {
           try {
-            observer.onScopeEnter(scope)
+            observer.onScopeEnter(scope = scope)
             scope.rereadTrackedInstances()
           } finally {
-            observer.onScopeExit(scope)
+            observer.onScopeExit(scope = scope)
           }
         } else {
           scope.rereadTrackedInstances()
         }
+
         invalidateStack.pop()
       }
 
-      // Using slots.current here ensures composition always walks forward even if a component
+      // Using `slots.current` here ensures composition always walks forward even if a component
       // before the current composition is invalidated when performing this composition. Any
       // such components will be considered invalid for the next composition. Skipping them
       // prevents potential infinite recomposes at the cost of potentially missing a compose
       // as well as simplifies the apply as it always modifies the slot table in a forward
       // direction.
-      firstInRange = invalidations.firstInRange(reader.currentGroup, end)
+      //
+      // 여기서 `slots.current`를 사용하면, 현재 컴포지션을 수행할 때 이전 컴포넌트가 무효화되더라도
+      // 컴포지션이 항상 앞으로 진행되도록 보장합니다. 이러한 컴포넌트들은 다음 컴포지션에서
+      // 무효한 것으로 간주됩니다. 이를 건너뛰면 잠재적으로 한 번의 컴포즈를 놓칠 수 있지만,
+      // 무한 리컴포즈를 방지하고 적용 과정이 단순해집니다. 왜냐하면 슬롯 테이블이 항상 앞으로만
+      // 수정되기 때문입니다.
+      firstInRange = invalidations.firstInRange(start = reader.currentGroup, end = end)
     }
 
     if (recomposed) {
-      recordUpsAndDowns(oldGroup, parent, parent)
+      recordUpsAndDowns(
+        oldGroup = oldGroup,
+        newGroup = parent,
+        commonRoot = parent,
+      )
+
       reader.skipToGroupEnd()
-      val parentGroupNodes = updatedNodeCount(parent)
+
+      val parentGroupNodes = updatedNodeCount(group = parent)
+
       nodeIndex = recomposeIndex + parentGroupNodes
       groupNodeCount = oldGroupNodeCount + parentGroupNodes
       rGroupIndex = oldRGroupIndex
-    } else {
+    }
+
+    // recomposed == false
+    // MEMO 리컴포지션 스킵 처리?
+    else {
       // No recompositions were requested in the range, skip it.
+      // 해당 범위에서 리컴포지션이 요청되지 않았으므로 건너뜁니다.
       skipReaderToGroupEnd()
 
       // No need to restore the parent state for nodeIndex, groupNodeCount and
-      // rGroupIndex as they are going to be restored immediately by the endGroup
+      // rGroupIndex as they are going to be restored immediately by the endGroup.
+      //
+      // nodeIndex, groupNodeCount, rGroupIndex의 부모 상태는 복원할 필요가 없습니다.
+      // endGroup에서 곧바로 복원되기 때문입니다.
     }
-    this@ComposerImpl.compositeKeyHashCode = recomposeCompositeKey
 
+    this@ComposerImpl.compositeKeyHashCode = recomposeCompositeKey
     isComposing = wasComposing
   }
 
@@ -1770,43 +2284,65 @@ internal class ComposerImpl(
    *
    * This function will also restore a virtual index to its index in the insertTable which is not
    * needed here but could be useful for debugging.
+   *
+   *
+   * insertTable의 인덱스는 slotTable의 인덱스와 겹치므로, 새로 삽입된 그룹을 추적하기 위해 사용하는
+   * 그룹 인덱스는 -2부터 시작하는 음수 오프셋으로 설정됩니다. 여기서 -1은 루트 인덱스로 예약되며,
+   * 이는 slot table의 루트 그룹들이 반환하는 부모 값입니다.
+   *
+   * 또한 이 함수는 가상 인덱스를 insertTable의 실제 인덱스로 복원하기도 합니다. 이 기능은 여기서는
+   * 필요하지 않지만 디버깅에는 유용할 수 있습니다.
    */
-  private fun insertedGroupVirtualIndex(index: Int) = -2 - index
+  private fun insertedGroupVirtualIndex(index: Int): Int = (-2) - index
 
   /**
    * As operations to insert and remove nodes are recorded, the number of nodes that will be in
    * the group after changes are applied is maintained in a side overrides table. This method
    * updates that count and then updates any parent groups that include the nodes this group
    * emits.
+   *
+   * 노드 삽입과 제거 작업이 기록될 때, 변경 사항이 적용된 후 그룹에 포함될 노드 수는 별도의
+   * 오버라이드 테이블에 유지됩니다. 이 메서드는 그 수를 갱신한 뒤, 해당 그룹이 내보내는 노드를
+   * 포함하는 부모 그룹들도 함께 갱신합니다.
    */
   private fun updateNodeCountOverrides(group: Int, newCount: Int) {
     // The value of group can be negative which indicates it is tracking an inserted group
     // instead of an existing group. The index is a virtual index calculated by
     // insertedGroupVirtualIndex which corresponds to the location of the groups to insert in
     // the insertTable.
-    val currentCount = updatedNodeCount(group)
+    //
+    // group 값이 음수일 수 있는데, 이는 기존 그룹이 아니라 새로 삽입된 그룹을 추적하고 있음을
+    // 의미합니다. index는 insertedGroupVirtualIndex로 계산된 가상 인덱스로, insertTable에 삽입될
+    // 그룹의 위치에 해당합니다.
+    val currentCount = updatedNodeCount(group = group)
     if (currentCount != newCount) {
-      // Update the overrides
+      // Update the overrides.
+      // 오버라이드를 갱신합니다.
       val delta = newCount - currentCount
       var current = group
-
       var minPending = pendingStack.size - 1
+
       while (current != -1) {
-        val newCurrentNodes = updatedNodeCount(current) + delta
-        updateNodeCount(current, newCurrentNodes)
+        val newCurrentNodes = updatedNodeCount(group = current) + delta
+
+        updateNodeCount(group = current, count = newCurrentNodes)
+
         for (pendingIndex in minPending downTo 0) {
-          val pending = pendingStack.peek(pendingIndex)
-          if (pending != null && pending.updateNodeCount(current, newCurrentNodes)) {
+          val pending = pendingStack.peek(index = pendingIndex)
+          if (
+            pending != null &&
+            pending.updateNodeCount(group = current, newCount = newCurrentNodes)
+          ) {
             minPending = pendingIndex - 1
             break
           }
         }
-        @Suppress("LiftReturnOrAssignment")
+
         if (current < 0) {
           current = reader.parent
         } else {
-          if (reader.isNode(current)) break
-          current = reader.parent(current)
+          if (reader.isNode(index = current)) break
+          current = reader.parent(index = current)
         }
       }
     }
@@ -1816,6 +2352,10 @@ internal class ComposerImpl(
    * Calculates the node index (the index in the child list of a node will appear in the resulting
    * tree) for [group]. Passing in [recomposeGroup] and its node index in [recomposeIndex] allows
    * the calculation to exit early if there is no node group between [group] and [recomposeGroup].
+   *
+   * [group]의 노드 인덱스를 계산합니다. 이 인덱스는 결과 트리에서 노드의 자식 목록에 나타나는
+   * 위치를 의미합니다. [recomposeGroup]과 그 노드 인덱스를 [recomposeIndex]로 전달하면, [group]과
+   * [recomposeGroup] 사이에 노드 그룹이 없을 경우 계산을 일찍 종료할 수 있습니다.
    */
   private fun nodeIndexOf(
     groupLocation: Int,
@@ -1823,77 +2363,99 @@ internal class ComposerImpl(
     recomposeGroup: Int,
     recomposeIndex: Int,
   ): Int {
-    // Find the anchor group which is either the recomposeGroup or the first parent node
-    var anchorGroup = reader.parent(group)
+    // Find the anchor group which is either the recomposeGroup or the first parent node.
+    // 앵커 그룹을 찾습니다. 이는 recomposeGroup이거나 첫 번째 부모 노드입니다.
+    var anchorGroup = reader.parent(index = group)
+
     while (anchorGroup != recomposeGroup) {
-      if (reader.isNode(anchorGroup)) break
-      anchorGroup = reader.parent(anchorGroup)
+      if (reader.isNode(index = anchorGroup))
+        break
+
+      anchorGroup = reader.parent(index = anchorGroup)
     }
 
-    var index = if (reader.isNode(anchorGroup)) 0 else recomposeIndex
+    var index = if (reader.isNode(index = anchorGroup)) 0 else recomposeIndex
 
-    // An early out if the group and anchor are the same
+    // An early out if the group and anchor are the same.
+    // 그룹과 앵커가 같으면 일찍 종료합니다.
     if (anchorGroup == group) return index
 
-    // Walk down from the anchor group counting nodes of siblings in front of this group
+    // Walk down from the anchor group counting nodes of siblings in front of this group.
+    // 앵커 그룹에서 내려가며 이 그룹 앞에 있는 형제 노드들을 세어 나갑니다.
     var current = anchorGroup
-    val nodeIndexLimit = index + (updatedNodeCount(anchorGroup) - reader.nodeCount(group))
+    val nodeIndexLimit =
+      index + (updatedNodeCount(group = anchorGroup) - reader.nodeCount(index = group))
+
     loop@ while (index < nodeIndexLimit) {
-      if (current == groupLocation) break
+      if (current == groupLocation)
+        break
+
       current++
+
       while (current < groupLocation) {
-        val end = current + reader.groupSize(current)
+        val end = current + reader.groupSize(index = current)
+
         if (groupLocation < end) continue@loop
-        index += if (reader.isNode(current)) 1 else updatedNodeCount(current)
+
+        index +=
+          if (reader.isNode(index = current))
+            1
+          else
+            updatedNodeCount(group = current)
+
         current = end
       }
+
       break
     }
+
     return index
   }
 
   private fun rGroupIndexOf(group: Int): Int {
     var result = 0
-    val parent = reader.parent(group)
+    val parent = reader.parent(index = group)
     var child = parent + 1
+
     while (child < group) {
-      if (!reader.hasObjectKey(child)) result++
-      child += reader.groupSize(child)
+      if (!reader.hasObjectKey(index = child))
+        result++
+
+      child += reader.groupSize(index = child)
     }
+
     return result
   }
 
   private fun updatedNodeCount(group: Int): Int {
     if (group < 0)
-      return nodeCountVirtualOverrides?.let { if (it.contains(group)) it[group] else 0 } ?: 0
+      return nodeCountVirtualOverrides?.getOrDefault(group, 0) ?: 0
+
     val nodeCounts = nodeCountOverrides
     if (nodeCounts != null) {
       val override = nodeCounts[group]
       if (override >= 0) return override
     }
-    return reader.nodeCount(group)
+
+    return reader.nodeCount(index = group)
   }
 
   private fun updateNodeCount(group: Int, count: Int) {
-    if (updatedNodeCount(group) != count) {
+    if (updatedNodeCount(group = group) != count) {
       if (group < 0) {
-        val virtualCounts =
-          nodeCountVirtualOverrides
-            ?: run {
-              val newCounts = MutableIntIntMap()
-              nodeCountVirtualOverrides = newCounts
-              newCounts
-            }
+        val virtualCounts = nodeCountVirtualOverrides ?: run {
+          val newCounts = MutableIntIntMap()
+          nodeCountVirtualOverrides = newCounts
+          newCounts
+        }
         virtualCounts[group] = count
       } else {
-        val nodeCounts =
-          nodeCountOverrides
-            ?: run {
-              val newCounts = IntArray(reader.size)
-              newCounts.fill(-1)
-              nodeCountOverrides = newCounts
-              newCounts
-            }
+        val nodeCounts = nodeCountOverrides ?: run {
+          val newCounts = IntArray(reader.size)
+          newCounts.fill(-1)
+          nodeCountOverrides = newCounts
+          newCounts
+        }
         nodeCounts[group] = count
       }
     }
@@ -1907,26 +2469,43 @@ internal class ComposerImpl(
   /**
    * Records the operations necessary to move the applier the node affected by the previous group
    * to the new group.
+   *
+   * 이전 그룹의 영향을 받은 노드를 새로운 그룹으로 옮기기 위해 applier에 필요한 작업을 기록합니다.
    */
   private fun recordUpsAndDowns(oldGroup: Int, newGroup: Int, commonRoot: Int) {
     val reader = reader
-    val nearestCommonRoot = reader.nearestCommonRootOf(oldGroup, newGroup, commonRoot)
+    val nearestCommonRoot =
+      reader.nearestCommonRootOf(
+        aGroup = oldGroup,
+        bGroup = newGroup,
+        common = commonRoot,
+      )
 
-    // Record ups for the nodes between oldGroup and nearestCommonRoot
+    // Record ups for the nodes between oldGroup and nearestCommonRoot.
+    // oldGroup과 nearestCommonRoot 사이 노드들의 상향 이동을 기록합니다.
     var current = oldGroup
+
     while (current > 0 && current != nearestCommonRoot) {
-      if (reader.isNode(current)) changeListWriter.moveUp()
-      current = reader.parent(current)
+      if (reader.isNode(index = current))
+        changeListWriter.moveUp()
+
+      current = reader.parent(index = current)
     }
 
-    // Record downs from nearestCommonRoot to newGroup
-    doRecordDownsFor(newGroup, nearestCommonRoot)
+    // Record downs from nearestCommonRoot to newGroup.
+    // nearestCommonRoot에서 newGroup으로의 하향 이동을 기록합니다.
+    doRecordDownsFor(group = newGroup, nearestCommonRoot = nearestCommonRoot)
   }
 
   private fun doRecordDownsFor(group: Int, nearestCommonRoot: Int) {
     if (group > 0 && group != nearestCommonRoot) {
-      doRecordDownsFor(reader.parent(group), nearestCommonRoot)
-      if (reader.isNode(group)) changeListWriter.moveDown(reader.nodeAt(group))
+      doRecordDownsFor(
+        group = reader.parent(index = group),
+        nearestCommonRoot = nearestCommonRoot
+      )
+
+      if (reader.isNode(index = group))
+        changeListWriter.moveDown(node = reader.nodeAt(index = group))
     }
   }
 
@@ -1934,6 +2513,9 @@ internal class ComposerImpl(
    * Calculate the composite key (a semi-unique key produced for every group in the composition)
    * for [group]. Passing in the [recomposeGroup] and [recomposeKey] allows this method to exit
    * early.
+   *
+   * 컴포지션의 각 그룹에 생성되는 반고유 키인 합성 키를 [group]을 기준으로 계산합니다.
+   * [recomposeGroup]과 [recomposeKey]를 전달하면 이 메서드는 일찍 종료할 수 있습니다.
    */
   private fun compositeKeyOf(
     group: Int,
@@ -1941,71 +2523,109 @@ internal class ComposerImpl(
     recomposeKey: CompositeKeyHashCode,
   ): CompositeKeyHashCode {
     // The general form of a group's compositeKey can be solved by recursively evaluating:
-    // compositeKey(group) = ((compositeKey(parent(group)) rol 3)
-    //      xor compositeKeyPart(group) rol 3) xor effectiveRGroupIndex
+    //
+    //    compositeKey(group) = ((compositeKey(parent(group)) rol 3)
+    //                            xor compositeKeyPart(group) rol 3)
+    //                            xor effectiveRGroupIndex
     //
     // To solve this without recursion, first expand the terms:
-    // compositeKey(group) = (compositeKey(parent(group)) rol 6)
-    //                      xor (compositeKeyPart(group) rol 3)
-    //                      xor effectiveRGroupIndex
+    //
+    //    compositeKey(group) = (compositeKey(parent(group)) rol 6)
+    //                            xor (compositeKeyPart(group) rol 3)
+    //                            xor effectiveRGroupIndex
     //
     // Then rewrite this as an iterative XOR sum, where n represents the distance from the
-    // starting node and takes the range 0 <= n < depth(group) and g - n represents the n-th
+    // starting node and takes the range `0 <= n < depth(group)` and `g - n` represents the n-th
     // parent of g, and all terms are XOR-ed together:
     //
-    // [compositeKeyPart(g - n) rol (6n + 3)] xor [rGroupIndexOf(g - n) rol (6n)]
+    //    [compositeKeyPart(g - n) rol (6n + 3)] xor [rGroupIndexOf(g - n) rol (6n)]
     //
-    // Because compositeKey(g - n) is known when (g - n) == recomposeGroup, we can terminate
-    // early and substitute that iteration's terms with recomposeKey rol (6n).
+    // Because `compositeKey(g - n)` is known when `(g - n) == recomposeGroup`, we can terminate
+    // early and substitute that iteration's terms with `recomposeKey rol (6n)`.
+    //
+    //
+    //
+    // 그룹의 compositeKey 일반식은 다음과 같이 재귀적으로 계산할 수 있습니다:
+    //
+    //    compositeKey(group) = ((compositeKey(parent(group)) rol 3)
+    //                            xor compositeKeyPart(group) rol 3)
+    //                            xor effectiveRGroupIndex
+    //
+    // 이를 재귀 없이 풀기 위해 항들을 전개하면 다음과 같습니다:
+    //
+    //    compositeKey(group) = (compositeKey(parent(group)) rol 6)
+    //                            xor (compositeKeyPart(group) rol 3)
+    //                            xor effectiveRGroupIndex
+    //
+    // 이제 이를 반복적인 XOR 합으로 다시 쓸 수 있습니다. 여기서 n은 시작 노드로부터의 거리를
+    // 나타내며 범위는 `0 <= n < depth(group)`이고, `g - n`은 g의 n번째 부모를 의미합니다.
+    // 모든 항들은 XOR 연산으로 결합됩니다:
+    //
+    //    [compositeKeyPart(g - n) rol (6n + 3)] xor [rGroupIndexOf(g - n) rol (6n)]
+    //
+    // `(g - n) == recomposeGroup`일 때 `compositeKey(g - n)`을 알고 있으므로, 이 경우에는 조기
+    // 종료하고 해당 반복 항을 `recomposeKey rol (6n)`으로 대체할 수 있습니다.
 
     var keyRot = 3
     var rgiRot = 0
-    var result = CompositeKeyHashCode(0)
+    var result = CompositeKeyHashCode(initial = 0)
 
     var parent = group
     while (parent >= 0) {
       if (parent == recomposeGroup) {
-        result = result.bottomUpCompoundWith(recomposeKey, rgiRot)
+        result = result.bottomUpCompoundWith(segment = recomposeKey, shift = rgiRot)
         return result
       }
 
-      val groupKey = reader.groupCompositeKeyPart(parent)
+      val groupKey = reader.groupCompositeKeyPart(group = parent)
+
       if (groupKey == movableContentKey) {
-        result = result.bottomUpCompoundWith(groupKey, rgiRot)
+        result = result.bottomUpCompoundWith(segment = groupKey, shift = rgiRot)
         return result
       }
 
-      val effectiveRGroupIndex = if (reader.hasObjectKey(parent)) 0 else rGroupIndexOf(parent)
+      val effectiveRGroupIndex =
+        if (reader.hasObjectKey(index = parent))
+          0
+        else
+          rGroupIndexOf(group = parent)
+
       result =
         result
-          .bottomUpCompoundWith(groupKey, keyRot)
-          .bottomUpCompoundWith(effectiveRGroupIndex, rgiRot)
+          .bottomUpCompoundWith(segment = groupKey, shift = keyRot)
+          .bottomUpCompoundWith(segment = effectiveRGroupIndex, shift = rgiRot)
+
       keyRot = (keyRot + 6) % CompositeKeyHashSizeBits
       rgiRot = (rgiRot + 6) % CompositeKeyHashSizeBits
 
-      parent = reader.parent(parent)
+      parent = reader.parent(index = parent)
     }
 
     return result
   }
 
   private fun SlotReader.groupCompositeKeyPart(group: Int): Int =
-    if (hasObjectKey(group)) {
-      groupObjectKey(group)?.let {
-        when (it) {
-          is Enum<*> -> it.ordinal
-          is MovableContent<*> -> movableContentKey
-          else -> it.hashCode()
+    if (hasObjectKey(index = group)) {
+      groupObjectKey(index = group)
+        ?.let { objectKey ->
+          when (objectKey) {
+            is Enum<*> -> objectKey.ordinal
+            is MovableContent<*> -> movableContentKey
+            else -> objectKey.hashCode()
+          }
         }
-      } ?: 0
-    } else
-      groupKey(group).let {
-        if (it == reuseKey)
-          groupAux(group)?.let { aux ->
-            if (aux == Composer.Empty) it else aux.hashCode()
-          } ?: it
-        else it
+        ?: 0
+    } else {
+      groupKey(index = group).let { groupKey ->
+        if (groupKey == reuseKey) {
+          groupAux(index = group)
+            ?.let { aux -> if (aux == Composer.Empty) groupKey else aux.hashCode() }
+            ?: groupKey
+        } else {
+          groupKey
+        }
       }
+    }
 
   internal fun tryImminentInvalidation(scope: RecomposeScopeImpl, instance: Any?): Boolean {
     val anchor = scope.anchor ?: return false
@@ -2062,7 +2682,7 @@ internal class ComposerImpl(
     // when reusing content. This 0 bit of `flags` is only 1 if this function was restarted by
     // the restart lambda. The other bits of this flags are currently all 0's and are reserved
     // for future use.
-    if (((flags and 1) == 0) && (inserting || reusing)) {
+    if (((flags and 0b1) == 0) && (inserting || reusing)) {
       val callback = shouldPauseCallback ?: return true
       val scope = currentRecomposeScope ?: return true
       val pausing = callback.shouldPause()
@@ -2131,43 +2751,58 @@ internal class ComposerImpl(
    * recompose scope of the composition. If the recompose scope is invalidated then this group
    * will be recomposed. A recompose scope can be invalidated by calling invalidate on the object
    * returned by [androidx.compose.runtime.currentRecomposeScope].
+   *
+   * restart group을 시작합니다. restart group은 recomposeScope를 생성하고 이를 구성의 현재
+   * recomposeScope로 설정합니다. recomposeScope가 무효화되면 이 그룹은 다시 컴포즈됩니다.
+   * recomposeScope는 [androidx.compose.runtime.currentRecomposeScope]가 반환하는 객체의
+   * invalidate를 호출하여 무효화할 수 있습니다.
    */
   @ComposeCompilerApi
   override fun startRestartGroup(key: Int): Composer {
-    startReplaceGroup(key)
+    startReplaceGroup(key = key)
     addRecomposeScope()
     return this
   }
 
   private fun addRecomposeScope() {
     if (inserting) {
-      val scope = RecomposeScopeImpl(composition as CompositionImpl)
+      val scope = RecomposeScopeImpl(owner = composition)
+
       invalidateStack.push(scope)
-      updateValue(scope)
-      enterRecomposeScope(scope)
+      updateValue(value = scope)
+      enterRecomposeScope(scope = scope)
     } else {
-      val invalidation = invalidations.removeLocation(reader.parent)
+      val invalidation = invalidations.removeLocation(location = reader.parent)
       val slot = reader.next()
       val scope =
         if (slot == Composer.Empty) {
           // This code is executed when a previously deactivate region is becomes active
-          // again. See Composer.deactivateToEndGroup()
-          val newScope = RecomposeScopeImpl(composition as CompositionImpl)
-          updateValue(newScope)
+          // again. See Composer.deactivateToEndGroup().
+          //
+          // 이 코드는 이전에 비활성화된 영역이 다시 활성화될 때 실행됩니다.
+          // Composer.deactivateToEndGroup()을 참고하세요.
+          val newScope = RecomposeScopeImpl(owner = composition)
+          updateValue(value = newScope)
           newScope
-        } else slot as RecomposeScopeImpl
+        } else {
+          slot as RecomposeScopeImpl
+        }
+
       scope.requiresRecompose =
         invalidation != null ||
           scope.forcedRecompose.also { forced ->
             if (forced) scope.forcedRecompose = false
           }
+
       invalidateStack.push(scope)
-      enterRecomposeScope(scope)
+      enterRecomposeScope(scope = scope)
 
       if (scope.paused) {
         scope.paused = false
         scope.resuming = true
-        changeListWriter.startResumingScope(scope)
+
+        changeListWriter.startResumingScope(scope = scope)
+
         if (!reusing && scope.reusing) {
           reusing = true
           scope.resetReusing = true
@@ -2177,8 +2812,8 @@ internal class ComposerImpl(
   }
 
   private fun enterRecomposeScope(scope: RecomposeScopeImpl) {
-    scope.start(compositionToken)
-    observerHolder.current()?.onScopeEnter(scope)
+    scope.start(token = compositionToken)
+    observerHolder.current()?.onScopeEnter(scope = scope)
   }
 
   /**
@@ -2186,57 +2821,80 @@ internal class ComposerImpl(
    * [ScopeUpdateScope] is returned that allows attaching a lambda that will produce the same
    * composition as was produced by this group (including calling [startRestartGroup] and
    * [endRestartGroup]).
+   *
+   * restart group을 종료합니다. 컴포지션 중 recomposeScope가 사용되었다면, [ScopeUpdateScope]가
+   * 반환되어 람다를 연결할 수 있으며, 이 람다는 이 그룹에서 생성된 것과 동일한 컴포지션을 다시
+   * 생성합니다 ([startRestartGroup]과 [endRestartGroup] 호출 포함).
    */
   @ComposeCompilerApi
   override fun endRestartGroup(): ScopeUpdateScope? {
     // This allows for the invalidate stack to be out of sync since this might be called during
     // exception stack unwinding that might have not called the doneJoin/endRestartGroup in the
     // the correct order.
-    val scope = if (invalidateStack.isNotEmpty()) invalidateStack.pop() else null
+    //
+    // 예외 스택이 풀리는 과정에서 doneJoin/endRestartGroup이 올바른 순서로 호출되지 않았을 수
+    // 있으므로, 무효화 스택이 동기화되지 않아도 되도록 허용합니다.
+    val scope =
+      if (invalidateStack.isNotEmpty())
+        invalidateStack.pop()
+      else
+        null
+
     if (scope != null) {
       scope.requiresRecompose = false
-      exitRecomposeScope(scope)?.let { changeListWriter.endCompositionScope(it, composition) }
+
+      exitRecomposeScope(scope)?.let {
+        changeListWriter.endCompositionScope(action = it, composition = composition)
+      }
+
       if (scope.resuming) {
         scope.resuming = false
-        changeListWriter.endResumingScope(scope)
+        changeListWriter.endResumingScope(scope = scope)
         scope.reusing = false
+
         if (scope.resetReusing) {
           scope.resetReusing = false
           reusing = false
         }
       }
     }
+
     val result =
-      if (scope != null && !scope.skipped && (scope.used || forceRecomposeScopes)) {
+      if (
+        scope != null &&
+        !scope.skipped &&
+        (scope.used || forceRecomposeScopes)
+      ) {
         if (scope.anchor == null) {
           scope.anchor =
-            if (inserting) {
-              writer.anchor(writer.parent)
-            } else {
-              reader.anchor(reader.parent)
-            }
+            if (inserting)
+              writer.anchor(index = writer.parent)
+            else
+              reader.anchor(index = reader.parent)
         }
+
         scope.defaultsInvalid = false
         scope
       } else {
         null
       }
+
     end(isNode = false)
     return result
   }
 
   private fun exitRecomposeScope(scope: RecomposeScopeImpl): ((Composition) -> Unit)? {
-    observerHolder.current()?.onScopeExit(scope)
-    return scope.end(compositionToken)
+    observerHolder.current()?.onScopeExit(scope = scope)
+    return scope.end(token = compositionToken)
   }
 
   @InternalComposeApi
   override fun insertMovableContent(value: MovableContent<*>, parameter: Any?) {
     @Suppress("UNCHECKED_CAST")
     invokeMovableContentLambda(
-      value as MovableContent<Any?>,
-      currentCompositionLocalScope(),
-      parameter,
+      content = value as MovableContent<Any?>,
+      locals = currentCompositionLocalScope(),
+      parameter = parameter,
       force = false,
     )
   }
@@ -2693,30 +3351,40 @@ internal class ComposerImpl(
     }
   }
 
-  val hasInvalidations
+  @Suppress("unused")
+  val hasInvalidations: Boolean
     get() = invalidations.isNotEmpty()
 
-  private val SlotReader.node
-    get() = node(parent)
+  private val SlotReader.node: Any?
+    get() = node(index = parent)
 
-  private fun SlotReader.nodeAt(index: Int) = node(index)
+  private fun SlotReader.nodeAt(index: Int): Any? = node(index = index)
 
   private fun validateNodeExpected() {
     runtimeCheck(nodeExpected) {
+      // createNode(), emitNode() 또는 useNode() 호출이 예상되었으나 호출되지 않았습니다.
       "A call to createNode(), emitNode() or useNode() expected was not expected"
     }
+
     nodeExpected = false
   }
 
   private fun validateNodeNotExpected() {
-    runtimeCheck(!nodeExpected) { "A call to createNode(), emitNode() or useNode() expected" }
+    runtimeCheck(!nodeExpected) {
+      // createNode(), emitNode() 또는 useNode() 호출이 예상되었습니다.
+      "A call to createNode(), emitNode() or useNode() expected"
+    }
   }
 
   private fun recordInsert(anchor: Anchor) {
     if (insertFixups.isEmpty()) {
-      changeListWriter.insertSlots(anchor, insertTable)
+      changeListWriter.insertSlots(anchor = anchor, from = insertTable)
     } else {
-      changeListWriter.insertSlots(anchor, insertTable, insertFixups)
+      changeListWriter.insertSlots(
+        anchor = anchor,
+        from = insertTable,
+        fixups = insertFixups,
+      )
       insertFixups = FixupList()
     }
   }
@@ -2724,7 +3392,10 @@ internal class ComposerImpl(
   private fun recordDelete() {
     // It is import that the movable content is reported first so it can be removed before the
     // group itself is removed.
-    reportFreeMovableContent(reader.currentGroup)
+    //
+    // 이동 가능한 콘텐츠는 그룹 자체가 제거되기 전에 먼저 제거될 수 있도록 우선 보고하는 것이
+    // 중요합니다.
+    reportFreeMovableContent(groupBeingRemoved = reader.currentGroup)
     changeListWriter.removeCurrentGroup()
   }
 
@@ -2737,9 +3408,16 @@ internal class ComposerImpl(
    *
    * @param groupBeingRemoved The group that is being removed from the table or 0 if the entire
    *   table is being removed.
+   *
+   *
+   * 그룹에 포함된 movable 콘텐츠가 제거되었고 이동할 준비가 되었음을 보고합니다. 그룹 자체가
+   * 제거되었으면 true를 반환합니다.
+   *
+   * 자리에 남아 있는 노드의 수를 반환하며, 이는 중첩 호출의 노드 인덱스를 계산하는 데 사용됩니다.
+   *
+   * @param groupBeingRemoved 제거되는 그룹. 전체 테이블이 제거되는 경우 0입니다.
    */
   private fun reportFreeMovableContent(groupBeingRemoved: Int) {
-
     fun createMovableContentReferenceForGroup(
       group: Int,
       nestedStates: List<MovableContentStateReference>?,
@@ -2879,6 +3557,7 @@ internal class ComposerImpl(
         if (reader.isNode(group)) 1 else runningNodeCount
       } else if (reader.isNode(group)) 1 else reader.nodeCount(group)
     }
+
     // If the group that is being deleted is a node we need to remove any children that
     // are moved.
     val rootIsNode = reader.isNode(groupBeingRemoved)
@@ -3111,17 +3790,42 @@ internal class ComposerImpl(
     dataKey: Any?,
     data: Any?,
   ) {
-    if (dataKey == null)
-      if (data != null && groupKey == reuseKey && data != Composer.Empty)
-        updateCompositeKeyWhenWeEnterGroupKeyHash(data.hashCode(), rGroupIndex)
-      else updateCompositeKeyWhenWeEnterGroupKeyHash(groupKey, rGroupIndex)
-    else if (dataKey is Enum<*>) updateCompositeKeyWhenWeEnterGroupKeyHash(dataKey.ordinal, 0)
-    else updateCompositeKeyWhenWeEnterGroupKeyHash(dataKey.hashCode(), 0)
+    if (dataKey == null) {
+      if (data != null && groupKey == reuseKey && data != Composer.Empty) {
+        updateCompositeKeyWhenWeEnterGroupKeyHash(
+          groupKey = data.hashCode(),
+          rGroupIndex = rGroupIndex,
+        )
+      } else {
+        updateCompositeKeyWhenWeEnterGroupKeyHash(
+          groupKey = groupKey,
+          rGroupIndex = rGroupIndex,
+        )
+      }
+    }
+
+    // dataKey != null
+    else if (dataKey is Enum<*>) {
+      updateCompositeKeyWhenWeEnterGroupKeyHash(
+        groupKey = dataKey.ordinal,
+        rGroupIndex = 0,
+      )
+    }
+
+    // dataKey != null && dataKey !is Enum<*>
+    else {
+      updateCompositeKeyWhenWeEnterGroupKeyHash(
+        groupKey = dataKey.hashCode(),
+        rGroupIndex = 0,
+      )
+    }
   }
 
   private inline fun updateCompositeKeyWhenWeEnterGroupKeyHash(groupKey: Int, rGroupIndex: Int) {
     compositeKeyHashCode =
-      compositeKeyHashCode.compoundWith(groupKey, 3).compoundWith(rGroupIndex, 3)
+      compositeKeyHashCode
+        .compoundWith(segment = groupKey, shift = 3)
+        .compoundWith(segment = rGroupIndex, shift = 3)
   }
 
   private inline fun updateCompositeKeyWhenWeExitGroup(
@@ -3130,27 +3834,46 @@ internal class ComposerImpl(
     dataKey: Any?,
     data: Any?,
   ) {
-    if (dataKey == null)
-      if (data != null && groupKey == reuseKey && data != Composer.Empty)
-        updateCompositeKeyWhenWeExitGroupKeyHash(data.hashCode(), rGroupIndex)
-      else updateCompositeKeyWhenWeExitGroupKeyHash(groupKey, rGroupIndex)
-    else if (dataKey is Enum<*>) updateCompositeKeyWhenWeExitGroupKeyHash(dataKey.ordinal, 0)
-    else updateCompositeKeyWhenWeExitGroupKeyHash(dataKey.hashCode(), 0)
+    if (dataKey == null) {
+      if (data != null && groupKey == reuseKey && data != Composer.Empty) {
+        updateCompositeKeyWhenWeExitGroupKeyHash(
+          groupKey = data.hashCode(),
+          rGroupIndex = rGroupIndex,
+        )
+      } else {
+        updateCompositeKeyWhenWeExitGroupKeyHash(
+          groupKey = groupKey,
+          rGroupIndex = rGroupIndex,
+        )
+      }
+    } else if (dataKey is Enum<*>) {
+      updateCompositeKeyWhenWeExitGroupKeyHash(
+        groupKey = dataKey.ordinal,
+        rGroupIndex = 0,
+      )
+    } else {
+      updateCompositeKeyWhenWeExitGroupKeyHash(
+        groupKey = dataKey.hashCode(),
+        rGroupIndex = 0,
+      )
+    }
   }
 
   private inline fun updateCompositeKeyWhenWeExitGroupKeyHash(groupKey: Int, rGroupIndex: Int) {
     compositeKeyHashCode =
-      compositeKeyHashCode.unCompoundWith(rGroupIndex, 3).unCompoundWith(groupKey, 3)
+      compositeKeyHashCode
+        .unCompoundWith(segment = rGroupIndex, shift = 3)
+        .unCompoundWith(segment = groupKey, shift = 3)
   }
 
   // This is only used in tests to ensure the stacks do not silently leak.
-  internal fun stacksSize(): Int {
-    return entersStack.size +
+  // 이것은 스택이 조용히 누수되지 않음을 확인하기 위해 테스트에서만 사용됩니다.
+  @TestOnly internal fun stacksSize(): Int =
+    entersStack.size +
       invalidateStack.size +
       providersInvalidStack.size +
       pendingStack.size +
       parentStateStack.size
-  }
 
   override val recomposeScope: RecomposeScope?
     get() = currentRecomposeScope
@@ -3341,20 +4064,66 @@ private fun SlotReader.distanceFrom(index: Int, root: Int): Int {
   return count
 }
 
-// find the nearest common root
-private fun SlotReader.nearestCommonRootOf(a: Int, b: Int, common: Int): Int {
-  // Early outs, to avoid calling distanceFrom in trivial cases
-  if (a == b) return a // A group is the nearest common root of itself
-  if (a == common || b == common) return common // If either is common then common is nearest
-  if (parent(a) == b) return b // if b is a's parent b is the nearest common root
-  if (parent(b) == a) return a // if a is b's parent a is the nearest common root
-  if (parent(a) == parent(b)) return parent(a) // if a an b share a parent it is common
+// 여기서 쓰인 알고리즘은 최소 공통 조상(LCA, Lowest Common Ancestor) 탐색 알고리즘이에요.
+//
+// ⸻
+//
+// 핵심 아이디어
+// 	•	두 노드(aGroup, bGroup)가 주어졌을 때, 이들이 속한 트리 구조에서 가장 가까운 공통 조상을
+// 	  찾는 문제.
+// 	•	코드에서는 parent(index) 함수를 통해 트리 위로 거슬러 올라갈 수 있고, distanceFrom을 이용해
+// 	  특정 루트까지의 깊이(depth)를 계산해요.
+//
+// ⸻
+//
+// 알고리즘 절차
+//
+// 	1.	빠른 종료 케이스(Early out)
+// 	•	두 노드가 동일한 경우 → 자기 자신이 LCA
+// 	•	하나가 공통 루트인 경우 → 공통 루트 반환
+// 	•	한쪽이 다른 쪽의 부모인 경우 → 부모를 반환
+// 	•	둘이 같은 부모를 공유하면 → 그 부모가 LCA
+//
+// 	2.	깊이 맞추기
+// 	•	distanceFrom(aGroup, common)과 distanceFrom(bGroup, common)으로 각 노드가 common 루트까지
+// 	  얼마나 떨어져 있는지 계산
+// 	•	깊이가 더 깊은 쪽을 부모로 올려서 두 노드를 같은 높이로 맞춤
+//
+// 	3.	조상 찾기
+// 	•	같은 깊이에서 동시에 부모를 따라 올라감
+// 	•	처음 만나는 동일한 노드가 LCA
+//
+// ⸻
+//
+// 성격
+// 	•	전형적인 Depth Alignment + Parent Climb 방식의 LCA 탐색
+// 	•	전처리(예: Binary Lifting, Tarjan Offline 알고리즘)는 쓰지 않고, 단순히 깊이를 맞춘 후 위로
+// 	  올라가는 방식이라 시간 복잡도는 O(h) (h = 트리 높이)
+//
+// ⸻
+//
+// 정리하면, 이 코드는 “트리에서 두 노드의 최소 공통 조상을 찾는 알고리즘(LCA)” 이고, 구현 방식은
+// 깊이 차이를 맞춘 뒤 동시에 부모로 올라가며 탐색하는 기본형 LCA 알고리즘이에요.
 
-  // Find the nearest using distance from common
-  var currentA = a
-  var currentB = b
-  val aDistance = distanceFrom(a, common)
-  val bDistance = distanceFrom(b, common)
+// find the nearest common root.
+// 가장 가까운 공통 루트를 찾습니다.
+//
+// MEMO 최소 공통 조상 알고리즘! 나 예전에 공부했던 거다 ㅎㅎ.
+private fun SlotReader.nearestCommonRootOf(aGroup: Int, bGroup: Int, common: Int): Int {
+  // Early outs, to avoid calling distanceFrom in trivial cases.
+
+  if (aGroup == bGroup) return aGroup // A group is the nearest common root of itself.
+  if (aGroup == common || bGroup == common) return common // If either is common then common is nearest.
+  if (parent(aGroup) == bGroup) return bGroup // if b is a's parent b is the nearest common root.
+  if (parent(bGroup) == aGroup) return aGroup // if a is b's parent a is the nearest common root.
+  if (parent(aGroup) == parent(bGroup)) return parent(aGroup) // if a an b share a parent it is common.
+
+  // Find the nearest using distance from common.
+  var currentA = aGroup
+  var currentB = bGroup
+  val aDistance = distanceFrom(aGroup, common)
+  val bDistance = distanceFrom(bGroup, common)
+
   repeat(aDistance - bDistance) { currentA = parent(currentA) }
   repeat(bDistance - aDistance) { currentB = parent(currentB) }
 
@@ -3365,22 +4134,27 @@ private fun SlotReader.nearestCommonRootOf(a: Int, b: Int, common: Int): Int {
     currentB = parent(currentB)
   }
 
-  // ca == cb so it doesn't matter which is returned
+  // ca == cb so it doesn't matter which is returned.
   return currentA
 }
 
 private val KeyInfo.joinedKey: Any
-  get() = if (objectKey != null) JoinedKey(key, objectKey) else key
+  get() =
+    if (objectKey != null)
+      JoinedKey(left = key, right = objectKey)
+    else
+      key
 
-/*
- * Group types used with [Composer.start] to differentiate between different types of groups
+/**
+ * Group types used with [Composer.start] to differentiate between different types of groups.
+ *
+ * [Composer.start]에서 사용하는 그룹 타입으로, 서로 다른 그룹 종류를 구분하는 데 사용합니다.
  */
-@JvmInline
-private value class GroupKind private constructor(val value: Int) {
-  inline val isNode
+@JvmInline private value class GroupKind private constructor(val value: Int) {
+  inline val isNode: Boolean
     get() = value != Group.value
 
-  inline val isReusable
+  inline val isReusable: Boolean
     get() = value != Node.value
 
   companion object {
@@ -3390,18 +4164,24 @@ private value class GroupKind private constructor(val value: Int) {
   }
 }
 
-private val InvalidationLocationAscending =
-  Comparator<Invalidation> { i1, i2 -> i1.location.compareTo(i2.location) }
+private val InvalidationLocationAscending: Comparator<Invalidation> =
+  Comparator { i1, i2 -> i1.location.compareTo(i2.location) }
 
 /*
  * Integer keys are arbitrary values in the biload range. The do not need to be unique as if
  * there is a chance they will collide with a compiler generated key they are paired with a
  * OpaqueKey to ensure they are unique.
+ *
+ * 정수 키는 biload 범위 내의 임의 값입니다. 컴파일러가 생성한 키와 충돌할 가능성이 있으면,
+ * 고유성을 보장하기 위해 OpaqueKey와 함께 사용하므로 고유할 필요가 없습니다.
  */
 
 // rootKey doesn't need a corresponding OpaqueKey as it never has sibling nodes and will always
 // a unique key.
+//
+// rootKey는 형제 노드를 가지지 않으며 항상 고유한 키이므로, OpaqueKey와 대응될 필요가 없습니다.
 private const val rootKey = 100
 
 // An arbitrary key value for a node.
+// 노드에 대한 임의의 키 값입니다.
 private const val nodeKey = 125
