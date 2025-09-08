@@ -30,32 +30,47 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rol
 import androidx.compose.runtime.updateChangedFlags
 
-internal const val SLOTS_PER_INT = 10
-private const val BITS_PER_SLOT = 3
+private const val SLOTS_COUNT_PER_INT = 10
+private const val BITS_COUNT_PER_SLOT = 3
 
 internal fun bitsForSlot(bits: Int, slot: Int): Int {
-  val realSlot = slot.rem(SLOTS_PER_INT)
-  return bits shl (realSlot * BITS_PER_SLOT + 1)
+  val realSlot = slot % SLOTS_COUNT_PER_INT
+  return bits shl (realSlot * BITS_COUNT_PER_SLOT + 1)
 }
 
-internal fun sameBits(slot: Int): Int = bitsForSlot(0b01, slot)
+// ParamState.Same(0b001)
+internal fun sameBits(slot: Int): Int = bitsForSlot(bits = 0b001, slot = slot)
 
-internal fun differentBits(slot: Int): Int = bitsForSlot(0b10, slot)
+// ParamState.Different(0b010)
+internal fun differentBits(slot: Int): Int = bitsForSlot(bits = 0b010, slot = slot)
 
 /**
- * A Restart is created to hold composable lambdas to track when they are invoked allowing the
- * invocations to be invalidated when a new composable lambda is created during composition.
+ * A Restart is created to hold composable lambdas to track when they are invoked allowing
+ * the invocations to be invalidated when a new composable lambda is created during composition.
  *
- * This allows much of the call-graph to be skipped when a composable function is passed through
- * multiple levels of composable functions.
+ * This allows much of the call-graph to be skipped when a composable function is passed
+ * through multiple levels of composable functions.
+ *
+ *
+ * Restart는 컴포저블 람다가 호출될 때 이를 추적하기 위해 생성되며, 컴포지션 중 새로운
+ * 컴포저블 람다가 생성되면 기존 호출들을 무효화할 수 있게 합니다.
+ *
+ * 이를 통해 컴포저블 함수가 여러 단계의 컴포저블 함수를 거쳐 전달되더라도 호출 그래프의
+ * 많은 부분을 건너뛸 수 있습니다.
  */
-@Suppress("NAME_SHADOWING", "UNCHECKED_CAST", "PARAMETER_NAME_CHANGED_ON_OVERRIDE")
+@Suppress("UNCHECKED_CAST")
 @Stable
-internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, block: Any?) : ComposableLambda {
+internal class ComposableLambdaImpl(
+  val key: Int,
+  private val tracked: Boolean, // RecomposeScope 변경 추적 및 block 변경시 리컴포지션 진행 여부
+  block: Any?,
+) : ComposableLambda {
   private var _block: Any? = block
   private var scope: RecomposeScope? = null
   private var scopes: MutableList<RecomposeScope>? = null
 
+  // tracked == true 라면 scope, scopes를 모두 invalidate() 하는 함수
+  // update(block)에서 block이 변경될 때만 호출됨
   private fun trackWrite() {
     if (tracked) {
       val scope = this.scope
@@ -63,6 +78,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
         scope.invalidate()
         this.scope = null
       }
+
       val scopes = this.scopes
       if (scopes != null) {
         for (index in 0 until scopes.size) {
@@ -78,25 +94,30 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
     if (tracked) {
       val scope = composer.recomposeScope
       if (scope != null) {
-        // Find the first invalid scope and replace it or record it if no scopes are invalid
-        composer.recordUsed(scope)
+        // Find the first invalid scope and replace it or record it if
+        // no scopes are invalid.
+        //
+        // 첫 번째로 무효화된 스코프를 찾아 교체하거나, 무효화된 스코프가
+        // 없으면 기록합니다.
+        composer.recordUsed(scope = scope)
+
         val lastScope = this.scope
-        if (lastScope.replacableWith(scope)) {
+        if (lastScope.replacableWith(other = scope)) {
+          // 무효화된 scope 찾아 교체하기
           this.scope = scope
         } else {
           val lastScopes = scopes
           if (lastScopes == null) {
-            val newScopes = mutableListOf<RecomposeScope>()
-            scopes = newScopes
-            newScopes.add(scope)
+            scopes = mutableListOf(scope)
           } else {
             for (index in 0 until lastScopes.size) {
               val scopeAtIndex = lastScopes[index]
-              if (scopeAtIndex.replacableWith(scope)) {
+              if (scopeAtIndex.replacableWith(other = scope)) {
                 lastScopes[index] = scope
                 return
               }
             }
+
             lastScopes.add(scope)
           }
         }
@@ -1070,7 +1091,7 @@ internal class ComposableLambdaImpl(val key: Int, private val tracked: Boolean, 
   }
 }
 
-internal fun RecomposeScope?.replacableWith(other: RecomposeScope) =
+internal fun RecomposeScope?.replacableWith(other: RecomposeScope): Boolean =
   this == null ||
     (this is RecomposeScopeImpl &&
       other is RecomposeScopeImpl &&
@@ -1270,6 +1291,8 @@ interface ComposableLambda :
     Any?,
     >
 
+private val lambdaKey = Any()
+
 @Suppress("unused")
 @ComposeCompilerApi fun composableLambda(
   composer: Composer,
@@ -1281,29 +1304,34 @@ interface ComposableLambda :
   // key. This is particularly important for live edit scenarios where the groups will be
   // invalidated by the key number. This ensures that invalidating the function will not
   // also invalidate its lambda.
-  composer.startMovableGroup(key.rol(1), lambdaKey)
+  //
+  // 함수의 키와 중복되지 않도록 롤링된 버전의 키를 사용합니다. 이는 그룹이 키 번호로
+  // 무효화되는 Live Edit 상황에서 특히 중요합니다. 이렇게 하면 함수가 무효화되더라도
+  // 그 람다가 함께 무효화되지 않도록 보장합니다.
+  composer.startMovableGroup(key = key rol 1, dataKey = lambdaKey)
+
   val slot = composer.rememberedValue()
   val result =
     if (slot === Composer.Empty) {
-      val value = ComposableLambdaImpl(key, tracked, block)
-      composer.updateRememberedValue(value)
+      val value = ComposableLambdaImpl(key = key, tracked = tracked, block = block)
+      composer.updateRememberedValue(value = value)
       value
     } else {
       slot as ComposableLambdaImpl
-      slot.update(block)
+      slot.update(block = block)
       slot
     }
+
   composer.endMovableGroup()
   return result
 }
 
-private val lambdaKey = Any()
-
 @Suppress("unused")
 @ComposeCompilerApi fun composableLambdaInstance(key: Int, tracked: Boolean, block: Any): ComposableLambda =
-  ComposableLambdaImpl(key, tracked, block)
+  ComposableLambdaImpl(key = key, tracked = tracked, block = block)
 
 @Suppress("unused")
 @Composable
 @ComposeCompilerApi fun rememberComposableLambda(key: Int, tracked: Boolean, block: Any): ComposableLambda =
-  remember { ComposableLambdaImpl(key, tracked, block) }.also { it.update(block) }
+  remember { ComposableLambdaImpl(key = key, tracked = tracked, block = block) }
+    .also { it.update(block = block) }

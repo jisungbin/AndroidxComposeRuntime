@@ -1065,16 +1065,19 @@ internal class ComposerImpl(
 
   @PublishedApi
   @OptIn(InternalComposeApi::class)
-  internal fun nextSlotForCache(): Any? {
-    return if (inserting) {
+  internal fun nextSlotForCache(): Any? =
+    if (inserting) {
       validateNodeNotExpected()
       Composer.Empty
     } else
-      reader.next().let {
-        if (reusing && it !is ReusableRememberObserverHolder) Composer.Empty
-        else if (it is RememberObserverHolder) it.wrapped else it
+      reader.next().let { slotValue ->
+        if (reusing && slotValue !is ReusableRememberObserverHolder)
+          Composer.Empty
+        else if (slotValue is RememberObserverHolder)
+          slotValue.wrapped
+        else
+          slotValue
       }
-  }
 
   /**
    * Determine if the current slot table value is equal to the given value, if true, the value is

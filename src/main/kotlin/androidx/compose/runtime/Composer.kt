@@ -343,6 +343,11 @@ sealed interface Composer {
    * The invalidation current invalidation scope. An new invalidation scope is created whenever
    * [startRestartGroup] is called. when this scope's [RecomposeScope.invalidate] is called then
    * lambda supplied to [endRestartGroup]'s [ScopeUpdateScope] will be scheduled to be run.
+   *
+   *
+   * 현재 무효화 스코프입니다. [startRestartGroup]이 호출될 때마다 새로운 무효화 스코프가 생성됩니다.
+   * 이 스코프의 [RecomposeScope.invalidate]가 호출되면, [endRestartGroup]의 [ScopeUpdateScope]에
+   * 제공된 람다가 실행되도록 예약됩니다.
    */
   @InternalComposeApi val recomposeScope: RecomposeScope?
 
@@ -721,20 +726,32 @@ sealed interface Composer {
   /**
    * A Compose compiler plugin API. DO NOT call directly.
    *
-   * Remember a value into the composition state. This is a primitive method used to implement
-   * [remember].
+   * Remember a value into the composition state. This is a primitive method used to
+   * implement [remember].
    *
    * @return [Composer.Empty] when [inserting] is `true` or the value passed to
    *   [updateRememberedValue] from the previous composition.
    * @see cache
+   *
+   *
+   * 컴포지션 상태에 값을 저장합니다. 이는 [remember]를 구현하기 위해 사용되는 기본
+   * 메서드입니다.
+   *
+   * MEMO [ComposerImpl.nextSlotForCache]와 동일함
+   *
+   * @return [inserting]이 true이면 [Composer.Empty]를 반환하거나, 이전 컴포지션에서
+   *  [updateRememberedValue]에 전달된 값을 반환합니다.
    */
   @ComposeCompilerApi fun rememberedValue(): Any?
 
   /**
    * A Compose compiler plugin API. DO NOT call directly.
    *
-   * Update the remembered value correspond to the previous call to [rememberedValue]. The [value]
-   * will be returned by [rememberedValue] for the next composition.
+   * Update the remembered value correspond to the previous call to [rememberedValue].
+   * The [value] will be returned by [rememberedValue] for the next composition.
+   *
+   * 이전 [rememberedValue] 호출에 해당하는 저장된 값을 갱신합니다. [value]는 다음
+   * 컴포지션에서 [rememberedValue]로 반환합니다.
    */
   @ComposeCompilerApi fun updateRememberedValue(value: Any?)
 
@@ -892,6 +909,11 @@ sealed interface Composer {
    * Mark [scope] as used. [endReplaceableGroup] will return `null` unless [recordUsed] is called
    * on the corresponding [scope]. This is called implicitly when [State] objects are read during
    * composition is called when [currentRecomposeScope] is called in the [Composable] function.
+   *
+   *
+   * [scope]를 사용된 것으로 표시합니다. [recordUsed]가 해당 [scope]에서 호출되지 않으면 [endReplaceableGroup]은
+   * null을 반환합니다. 이는 컴포지션 중 [State] 객체가 읽힐 때나 [Composable] 함수에서 [currentRecomposeScope]가
+   * 호출될 때 암묵적으로 호출됩니다.
    */
   @InternalComposeApi fun recordUsed(scope: RecomposeScope)
 

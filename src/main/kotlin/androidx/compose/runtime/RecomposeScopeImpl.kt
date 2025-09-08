@@ -19,52 +19,78 @@ package androidx.compose.runtime
 import androidx.collection.MutableObjectIntMap
 import androidx.collection.MutableScatterMap
 import androidx.collection.ScatterSet
-import androidx.compose.runtime.platform.makeSynchronizedObject
 import androidx.compose.runtime.snapshots.fastAny
 import androidx.compose.runtime.snapshots.fastForEach
 
 /**
- * Represents a recomposable scope or section of the composition hierarchy. Can be used to manually
- * invalidate the scope to schedule it for recomposition.
+ * Represents a recomposable scope or section of the composition hierarchy.
+ * Can be used to manually invalidate the scope to schedule it for recomposition.
+ *
+ * 컴포지션 계층에서 리컴포즈 가능한 스코프나 영역을 나타냅니다. 스코프를 수동으로
+ * 무효화하여 리컴포지션이 예약되도록 할 수 있습니다.
  */
 interface RecomposeScope {
   /**
-   * Invalidate the corresponding scope, requesting the composer recompose this scope.
+   * Invalidate the corresponding scope, requesting the composer recompose this
+   * scope.
+   *
+   * 해당 스코프를 무효화하여 컴포저가 이 스코프를 다시 컴포즈하도록 요청합니다.
    *
    * This method is thread safe.
    */
   fun invalidate()
 }
 
-private const val changedLowBitMask = 0b001_001_001_001_001_001_001_001_001_001_0
-private const val changedHighBitMask = changedLowBitMask shl 1
-private const val changedMask = (changedLowBitMask or changedHighBitMask).inv()
+// 원래 이름: changedLowBitMask
+private const val changedSameBit = 0b0_001_001_001_001_001_001_001_001_001_001_0
+
+//                                 0b0_010_010_010_010_010_010_010_010_010_010_0
+// 원래 이름: changedHighBitMask
+private const val changedDifferentBit = changedSameBit shl 1
+
+//                                 0b1_100_100_100_100_100_100_100_100_100_100_1
+// LSB가 1이고, 모든 슬롯의 MSB(== unstable flag)가 1인 마스킹
+// 원래 이름: changedMask
+private const val changedForceMask = (changedSameBit or changedDifferentBit).inv()
 
 /**
- * A compiler plugin utility function to change $changed flags from Different(10) to Same(01) for
- * when captured by restart lambdas. All parameters are passed with the same value as it was
- * previously invoked with and the changed flags should reflect that.
+ * A compiler plugin utility function to change $changed flags from `Different(0b010)` to
+ * `Same(0b001)` for when captured by restart lambdas. All parameters are passed with the
+ * same value as it was previously invoked with and the changed flags should reflect that.
+ *
+ * 컴파일러 플러그인 유틸리티 함수입니다. restart 람다가 캡처할 때 $changed 플래그를
+ * `Different(0b010)`에서 `Same(0b001)`로 변경합니다. 모든 매개변수는 이전 호출 당시와
+ * 동일한 값으로 전달되며 변경 플래그도 이를 반영해야 합니다.
  */
-@PublishedApi
-internal fun updateChangedFlags(flags: Int): Int {
-  val lowBits = flags and changedLowBitMask
-  val highBits = flags and changedHighBitMask
-  return ((flags and changedMask) or
-    (lowBits or (highBits shr 1)) or
-    ((lowBits shl 1) and highBits))
+// STUDY 바트마스킹 로직 이해 불가..
+@PublishedApi internal fun updateChangedFlags(flags: Int): Int {
+  val sameBits = flags and changedSameBit
+  val differentBits = flags and changedDifferentBit
+
+  return 0 +
+    // LSB와 각 슬롯의 MSB는 그대로 유지
+    (flags and changedForceMask) or
+
+    // Same(0b001)
+    // differentBits shr 1 == 0b0_001_001_001_001_001_001_001_001_001_001_0
+    (sameBits or (differentBits shr 1)) or
+
+    // Different(0b010)
+    // sameBits shl 1 == 0b0_010_010_010_010_010_010_010_010_010_010_0
+    ((sameBits shl 1) and differentBits)
 }
 
-private const val UsedFlag = 0x001
-private const val DefaultsInScopeFlag = 0x002
-private const val DefaultsInvalidFlag = 0x004
-private const val RequiresRecomposeFlag = 0x008
-private const val SkippedFlag = 0x010
-private const val RereadingFlag = 0x020
-private const val ForcedRecomposeFlag = 0x040
-private const val ForceReusing = 0x080
-private const val Paused = 0x100
-private const val Resuming = 0x200
-private const val ResetReusing = 0x400
+private const val UsedFlag = 0b00000000001
+private const val DefaultsInScopeFlag = 0b00000000010
+private const val DefaultsInvalidFlag = 0b00000000100
+private const val RequiresRecomposeFlag = 0b00000001000
+private const val SkippedFlag = 0b00000010000
+private const val RereadingFlag = 0b00000100000
+private const val ForcedRecomposeFlag = 0b00001000000
+private const val ForceReusing = 0b00010000000
+private const val Paused = 0b00100000000
+private const val Resuming = 0b01000000000
+private const val ResetReusing = 0b10000000000
 
 internal interface RecomposeScopeOwner {
   fun invalidate(scope: RecomposeScopeImpl, instance: Any?): InvalidationResult
@@ -73,8 +99,6 @@ internal interface RecomposeScopeOwner {
 
   fun recordReadOf(value: Any)
 }
-
-private val callbackLock = makeSynchronizedObject()
 
 /**
  * A RecomposeScope is created for a region of the composition that can be recomposed independently
@@ -96,6 +120,8 @@ internal class RecomposeScopeImpl(internal var owner: RecomposeScopeOwner?) :
   /**
    * An anchor to the location in the slot table that start the group associated with this
    * recompose scope.
+   *
+   * 이 recompose scope와 연결된 그룹이 시작되는 슬롯 테이블 위치를 가리키는 앵커입니다.
    */
   var anchor: Anchor? = null
 
@@ -103,6 +129,10 @@ internal class RecomposeScopeImpl(internal var owner: RecomposeScopeOwner?) :
    * Return whether the scope is valid. A scope becomes invalid when the slots it updates are
    * removed from the slot table. For example, if the scope is in the then clause of an if
    * statement that later becomes false.
+   *
+   * 스코프가 유효한지 여부를 반환합니다. 스코프가 갱신하는 슬롯이 슬롯 테이블에서 제거되면
+   * 스코프는 무효가 됩니다. 예를 들어, 스코프가 if 문의 then 절에 있고 해당 조건이 나중에
+   * false가 되는 경우입니다.
    */
   val valid: Boolean
     get() = owner != null && anchor?.valid ?: false
