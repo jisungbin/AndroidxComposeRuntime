@@ -1536,16 +1536,18 @@ internal class ComposerImpl(
         ReusableRememberObserverHolder(
           CompositionContextHolder(
             CompositionContextImpl(
-              this@ComposerImpl.compositeKeyHashCode,
-              forceRecomposeScopes,
-              sourceMarkersEnabled,
-              (composition as? CompositionImpl)?.observerHolder,
+              compositeKeyHashCode = this@ComposerImpl.compositeKeyHashCode,
+              collectingParameterInformation = forceRecomposeScopes,
+              collectingSourceInformation = sourceMarkersEnabled,
+              observerHolder = composition.observerHolder,
             )
           ),
           after = null,
         )
+
       updateValue(observerHolder)
     }
+
     val holder = observerHolder.wrapped as CompositionContextHolder
     holder.ref.updateCompositionLocalScope(currentCompositionLocalScope())
     endGroup()
@@ -1554,13 +1556,20 @@ internal class ComposerImpl(
   }
 
   /**
-   * The number of changes that have been scheduled to be applied during
-   * [ControlledComposition.applyChanges].
+   * The number of changes that have been scheduled to be applied during [ControlledComposition.applyChanges].
    *
    * Slot table movement (skipping groups and nodes) will be coalesced so this number is possibly
    * less than the total changes detected.
+   *
+   *
+   * 적용이 예약된 변경 사항의 수를 반환합니다. 이는 [ControlledComposition.applyChanges] 실행 중에
+   * 적용됩니다.
+   *
+   * 슬롯 테이블 이동(그룹 및 노드 건너뛰기)은 합쳐져 처리되므로, 이 값은 실제로 감지된 전체 변경 횟수보다
+   * 작을 수 있습니다.
    */
-  internal val changeCount
+  @Suppress("unused")
+  internal val changeCount: Int
     get() = changes.size
 
   internal val currentRecomposeScope: RecomposeScopeImpl?
